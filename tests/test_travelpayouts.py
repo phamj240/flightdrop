@@ -281,3 +281,10 @@ def test_next_best_failure_raises_and_deals_without_a_destination_skip_the_call(
     session = FakeSession([FakeResponse(200, alt_fixture())])
     assert tp.find_alternative(make_deal(destination=None), cfg, "T", NOW, session=session) is None
     assert session.calls == []
+
+
+def test_the_users_memphis_watch_is_queried_directly_even_though_memphis_is_not_a_home_airport(shipped_cfg):
+    session = FakeSession(ok)
+    tp.fetch(shipped_cfg, "T", NOW, session=session, sleep=lambda s: None)
+    queries = [(q["origin"], q["destination"]) for _, q, _ in session.calls]
+    assert queries == [("MSP", "-"), ("DFW", "-"), ("MEM", "MSP")]

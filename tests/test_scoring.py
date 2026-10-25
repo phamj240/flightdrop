@@ -313,3 +313,30 @@ def test_rank_dedupes_same_deal_keeping_best_score(cfg):
     cheap, pricey = scored(cfg, 300), scored(cfg, 440)       # same route + dates -> same deal_key
     ranked = rank_and_cap([pricey, cheap], 5)
     assert len(ranked) == 1 and ranked[0].deal.price_usd == 300
+
+
+# --- the user's watchlist entry: Memphis -> Minneapolis ---------------------------------
+
+def mem_msp(price, **kw):
+    return make_deal(origin="MEM", destination="MSP", price_usd=price, **kw)
+
+
+def test_the_users_memphis_to_minneapolis_watch_is_configured(shipped_cfg):
+    (w,) = shipped_cfg.watchlist
+    assert (w.origins, w.destination, w.cabin, w.max_price_usd) == (("MEM",), "MSP", "economy", 250.0)
+
+
+def test_memphis_to_minneapolis_alerts_at_or_under_the_target_despite_the_destination_filter(shipped_cfg):
+    # Minneapolis is US domestic, which the user's include list would otherwise reject.
+    assert ev(make_deal(origin="DFW", destination="MSP", price_usd=100.0), shipped_cfg) is None
+    s = ev(mem_msp(240.0), shipped_cfg)
+    assert s is not None and s.reasons == ["watchlist target $250"] and s.score > 1
+    assert ev(mem_msp(250.0), shipped_cfg) is not None                # target is inclusive
+    assert ev(mem_msp(251.0), shipped_cfg) is None
+
+
+def test_the_watch_is_one_direction_economy_and_respects_the_trip_window(shipped_cfg):
+    assert ev(make_deal(origin="MSP", destination="MEM", price_usd=100.0), shipped_cfg) is None       # reverse not watched
+    assert ev(mem_msp(100.0, cabin="business"), shipped_cfg) is None
+    too_long = mem_msp(100.0, return_date=date(2027, 3, 1))
+    assert ev(too_long, shipped_cfg) is None                                                           # 88-day trip
