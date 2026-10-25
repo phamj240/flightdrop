@@ -140,3 +140,30 @@ def test_watch_price_expires_after_90_days(store):
     assert store.watch_price("MEM-MSP-economy") == 320.0
     store.prune(NOW + timedelta(days=91))
     assert store.watch_price("MEM-MSP-economy") is None                                # starts fresh: next fare is a new baseline
+
+
+# --- live check memory ---------------------------------------------------------------------------
+
+def test_live_check_memory_matches_the_exact_fare_and_expires_after_a_day(store):
+    assert store.recent_live_check("k", 400.0, NOW) is None
+    store.save_live_check("k", 400.0, 430.0, "ok", NOW)
+    assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=23)) == ("ok", 430.0)
+    assert store.recent_live_check("k", 401.0, NOW + timedelta(hours=1)) is None             # cached price changed: new fare
+    assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=25)) is None            # older than a day
+    assert store.recent_live_check("other", 400.0, NOW) is None
+
+
+def test_live_check_memory_can_be_overwritten_and_holds_no_data_results(store):
+    store.save_live_check("k", 400.0, None, "nodata", NOW)
+    assert store.recent_live_check("k", 400.0, NOW) == ("nodata", None)
+    store.save_live_check("k", 400.0, 412.0, "ok", NOW + timedelta(hours=1))
+    assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=2)) == ("ok", 412.0)
+    assert store.db.execute("SELECT COUNT(*) FROM live_checks").fetchone()[0] == 1
+
+
+def test_old_live_checks_are_pruned(store):
+    store.save_live_check("k", 400.0, 410.0, "ok", NOW)
+    store.prune(NOW + timedelta(days=2))
+    assert store.db.execute("SELECT COUNT(*) FROM live_checks").fetchone()[0] == 1
+    store.prune(NOW + timedelta(days=4))
+    assert store.db.execute("SELECT COUNT(*) FROM live_checks").fetchone()[0] == 0

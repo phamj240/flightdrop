@@ -172,3 +172,10 @@ def test_moving_watch_entries_parse(raw):
 def test_invalid_moving_watch_entries(raw, entry, message):
     with pytest.raises(ConfigError, match=message):
         parse_config(mutated(raw, lambda r: r.update(watchlist=[entry])))
+
+
+def test_require_live_defaults_off_and_the_real_config_turns_it_on(raw, cfg, shipped_cfg):
+    assert cfg.verify.require_live is False
+    raw["verify"]["require_live"] = True
+    assert parse_config(raw).verify.require_live is True
+    assert shipped_cfg.verify.enabled is True and shipped_cfg.verify.require_live is True

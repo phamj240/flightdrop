@@ -47,9 +47,20 @@ edit the `cron` lines in `.github/workflows/scan.yml` (they are in UTC).
 |---|---|---|
 | Aviasales / Travelpayouts Data API | Cheapest cached economy fares from your airports to ~100-200 destinations | Prices are cached (up to ~7 days old), not live; no business class |
 | TheFlightDeal RSS (main + Dallas feeds) | Human-found deals; about one Dallas deal a day, posted around midday Central | Rarely mentions any one airport; no Minneapolis feed |
-| SerpApi Google Flights (optional) | Re-checks a fare's live price before posting | 250 free searches/month, so only a few per day |
+| SerpApi Google Flights | Checks every fare's live Google Flights price before it is posted | 250 free searches/month, so about 8 a day |
 
-Alerts say **live-verified** or **cached price - verify before booking**, so you always know which you got.
+### Why every alert is checked against Google
+
+The cheapest cached fares turned out to be unreliable: they were often 4 to 6 days old and came from small discount
+agencies whose advertised prices don't hold up (for example a Rome fare cached at $422 that Google showed at about
+$740). So before an alert is posted, the bot asks Google Flights (through SerpApi) for the live price on those exact
+dates. The alert shows **Google's price** (the same price your link opens), and a fare that no longer beats your price
+bars is dropped. Expect **fewer alerts**, but ones you can actually book.
+
+- A fare that can't be checked (no key, the free quota is used up, or an error) is **held, not posted**, and tried
+  again at the next scan. You'll get one Discord notice a day if checking is *impossible* (no key, or SerpApi failing).
+- Results are remembered for 24 hours so the free quota isn't spent re-checking the same fare.
+- Set `verify: require_live: false` in `config.yaml` if you'd rather get unchecked deals labelled as cached prices.
 
 ## Setup
 
@@ -59,10 +70,10 @@ You need a GitHub account, a Discord server, and about 15 minutes.
    from the developer/API section.
 2. **Discord webhook** (required). In your server: channel settings > Integrations > Webhooks > New Webhook >
    Copy Webhook URL.
-3. **SerpApi key** (optional). A free account at <https://serpapi.com> gives you a key. Skip it and alerts are
-   simply labelled as cached prices.
+3. **SerpApi key** (needed for alerts to go out). A free account at <https://serpapi.com> gives you a key: register,
+   verify your email, then copy **Your Private API Key** from the dashboard. Without it, deals are held until you add one.
 4. **Repo secrets.** In this repo: Settings > Secrets and variables > Actions > New repository secret. Add
-   `TRAVELPAYOUTS_TOKEN`, `DISCORD_WEBHOOK_URL`, and optionally `SERPAPI_KEY`.
+   `TRAVELPAYOUTS_TOKEN`, `DISCORD_WEBHOOK_URL`, and `SERPAPI_KEY`.
 5. **Run it.** Actions tab > *scan* > Run workflow. Tick *dry_run* first to see what it would post in the log.
    After that it runs by itself five times a day (see "When alerts are sent" below).
 

@@ -337,10 +337,23 @@ def test_the_target_resets_after_90_quiet_days(cfg, store):
     assert [s.deal.price_usd for s in post.sent] == [200.0, 300.0]
 
 
-def test_a_moving_watch_uses_the_cached_price_even_when_a_live_check_says_otherwise(cfg, store):
+def test_a_live_checked_moving_watch_remembers_the_live_price(cfg, store):
     wc, post = moving_cfg(cfg), Poster()
     run_scan([mem_fare(300.0)], wc, store, NOW, post=post, verify=lambda d: 310.0)       # live price a bit higher
-    assert post.sent[0].live_price_usd == 310.0 and store.watch_price("MEM-MSP-economy") == 300.0
+    assert post.sent[0].live_price_usd == 310.0 and store.watch_price("MEM-MSP-economy") == 310.0
+
+
+def test_a_live_checked_moving_watch_compares_live_to_live(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+    run_scan([mem_fare(300.0)], wc, store, NOW, post=post, verify=lambda d: 310.0)       # bar is now $310 (live)
+    later = NOW + timedelta(hours=3)
+    # cached 305 looks lower, but Google says 330: not lower than the $310 bar, so no alert
+    run_scan([mem_fare(305.0)], wc, store, later, post=post, verify=lambda d: 330.0)
+    assert len(post.sent) == 1
+    # cached 305 and Google agrees at 305 (4.7% under the bar... at least a dollar lower): alert
+    run_scan([mem_fare(304.0, depart_date=NOW.date() + timedelta(days=40), return_date=NOW.date() + timedelta(days=45))],
+             wc, store, later + timedelta(hours=3), post=post, verify=lambda d: 304.0)
+    assert [s.live_price_usd for s in post.sent] == [310.0, 304.0]
 
 
 def test_the_users_real_config_drives_the_same_ratchet(shipped_cfg, store):
@@ -349,3 +362,132 @@ def test_the_users_real_config_drives_the_same_ratchet(shipped_cfg, store):
     run_scan([mem_fare(280.0)], shipped_cfg, store, NOW + timedelta(hours=3), post=post)
     run_scan([mem_fare(270.0)], shipped_cfg, store, NOW + timedelta(hours=6), post=post)
     assert [s.deal.price_usd for s in post.sent] == [280.0, 270.0]
+
+
+# --- live price check: required, remembered, re-scored -----------------------------------------
+
+def scripted(prices, calls):
+    """A verifier that answers from a list of results (a float, None, or an exception) and logs calls."""
+    queue = list(prices)
+
+    def verify(deal):
+        calls.append(deal.destination)
+        item = queue.pop(0) if len(queue) > 1 else queue[0]
+        if isinstance(item, Exception):
+            raise item
+        return item
+    return verify
+
+
+def lis(price, **kw):
+    return make_deal(destination="LIS", price_usd=price, **kw)
+
+
+def test_required_live_holds_everything_when_there_is_no_key(cfg, store):
+    post = Poster()
+    r = run_scan(europe_deals()[:3], cfg, store, NOW, post=post, verify=None, require_live=True)
+    assert post.sent == [] and r.held_unverified == 3 and r.unverifiable == "no key"
+    assert store.alerts_since(NOW - timedelta(days=1)) == 0                  # not logged as sent: they wait
+
+
+def test_without_require_live_unchecked_deals_still_post_as_cached(cfg, store):
+    post = Poster()
+    r = run_scan(europe_deals()[:2], cfg, store, NOW, post=post, verify=None, require_live=False)
+    assert len(post.sent) == 2 and all(s.verification == "cached" for s in post.sent) and r.held_unverified == 0
+
+
+def test_a_checked_deal_shows_the_live_price_and_reasons_computed_from_it(cfg, store):
+    post, calls = Poster(), []
+    run_scan([lis(400.0)], cfg, store, NOW, post=post, verify=scripted([430.0], calls), require_live=True)
+    s = post.sent[0]
+    assert (s.verification, s.live_price_usd, s.deal.price_usd) == ("live", 430.0, 400.0)
+    assert s.reasons == ["under $550 europe economy target"]
+    assert abs(s.discount - (1 - 430 / 550)) < 1e-9                          # the discount is measured at the live price
+
+
+def test_a_deal_whose_live_price_no_longer_beats_the_bar_is_dropped_even_within_15_percent(cfg, store):
+    post, calls = Poster(), []
+    # cached 540 qualifies (bar 550); live 600 is only 11% higher but is over the bar
+    r = run_scan([lis(540.0)], cfg, store, NOW, post=post, verify=scripted([600.0], calls), require_live=True)
+    assert post.sent == [] and r.dropped_after_verify == 1 and r.held_unverified == 0
+
+
+def test_the_big_gap_between_cached_and_live_still_drops_the_deal(cfg, store):
+    post, calls = Poster(), []
+    run_scan([lis(422.0)], cfg, store, NOW, post=post, verify=scripted([740.0], calls), require_live=True)     # the Rome case
+    assert post.sent == []
+
+
+def test_a_used_up_daily_budget_holds_deals_until_the_next_day(cfg, store):
+    one_a_day = replace(cfg, verify=replace(cfg.verify, daily_budget=1))
+    post, calls = Poster(), []
+    deals = [lis(400.0), make_deal(destination="LHR", price_usd=410.0)]
+    r = run_scan(deals, one_a_day, store, NOW, post=post, verify=scripted([405.0, 415.0], calls), require_live=True)
+    assert [s.deal.destination for s in post.sent] == ["LIS"] and r.held_unverified == 1
+    assert r.unverifiable is None                                            # a spent quota is normal, not a fault
+    r2 = run_scan(deals, one_a_day, store, NOW + timedelta(days=1), post=post, verify=scripted([415.0], calls), require_live=True)
+    assert [s.deal.destination for s in post.sent] == ["LIS", "LHR"] and r2.held_unverified == 0
+
+
+def test_an_api_error_holds_the_deal_flags_it_and_is_retried_next_scan(cfg, store):
+    post, calls = Poster(), []
+    r = run_scan([lis(400.0)], cfg, store, NOW, post=post,
+                 verify=scripted([SourceError("HTTP 500")], calls), require_live=True)
+    assert post.sent == [] and r.held_unverified == 1 and r.unverifiable == "error"
+    run_scan([lis(400.0)], cfg, store, NOW + timedelta(hours=3), post=post,
+             verify=scripted([410.0], calls), require_live=True)              # errors are not remembered
+    assert len(post.sent) == 1 and len(calls) == 2
+
+
+def test_no_google_results_holds_the_deal_and_is_remembered_for_a_day(cfg, store):
+    post, calls = Poster(), []
+    verify = scripted([None], calls)
+    r = run_scan([lis(400.0)], cfg, store, NOW, post=post, verify=verify, require_live=True)
+    assert post.sent == [] and r.held_unverified == 1 and r.unverifiable is None
+    run_scan([lis(400.0)], cfg, store, NOW + timedelta(hours=3), post=post, verify=verify, require_live=True)
+    assert len(calls) == 1                                                   # no second paid check for the same fare
+    run_scan([lis(400.0)], cfg, store, NOW + timedelta(hours=25), post=post, verify=verify, require_live=True)
+    assert len(calls) == 2                                                   # the memory expires after a day
+
+
+def test_a_dropped_deal_is_not_rechecked_until_its_cached_price_changes(cfg, store):
+    post, calls = Poster(), []
+    verify = scripted([800.0], calls)
+    run_scan([lis(400.0)], cfg, store, NOW, post=post, verify=verify, require_live=True)
+    run_scan([lis(400.0)], cfg, store, NOW + timedelta(hours=3), post=post, verify=verify, require_live=True)
+    run_scan([lis(400.0)], cfg, store, NOW + timedelta(hours=6), post=post, verify=verify, require_live=True)
+    assert len(calls) == 1 and post.sent == []                               # the free quota is not burned on the same fake deal
+    run_scan([lis(380.0)], cfg, store, NOW + timedelta(hours=9), post=post, verify=verify, require_live=True)
+    assert len(calls) == 2                                                   # a changed cached price is a new fare
+
+
+def test_a_good_check_is_reused_when_the_post_has_to_be_retried(cfg, store):
+    calls = []
+    verify = scripted([410.0], calls)
+    run_scan([lis(400.0)], cfg, store, NOW, post=Poster(fail_on={"LIS"}), verify=verify, require_live=True)
+    post = Poster()
+    run_scan([lis(400.0)], cfg, store, NOW + timedelta(hours=3), post=post, verify=verify, require_live=True)
+    assert len(post.sent) == 1 and post.sent[0].live_price_usd == 410.0 and len(calls) == 1
+
+
+def test_feed_deals_are_exempt_from_live_checks(cfg, store):
+    feed = make_deal(origin="DFW", destination=None, price_usd=None, curated=True, source="theflightdeal",
+                     source_url="https://example.com/deal/9", title="t", depart_date=None, return_date=None)
+    post = Poster()
+    r = run_scan([feed], cfg, store, NOW, post=post, verify=None, require_live=True)
+    assert len(post.sent) == 1 and r.held_unverified == 0
+
+
+def test_held_for_alert_hours_never_spends_a_live_check(cfg, store):
+    calls = []
+    run_scan([lis(400.0)], cfg, store, NOW, post=Poster(), verify=scripted([405.0], calls),
+             alerts_allowed=False, require_live=True)
+    assert calls == []
+
+
+def test_no_key_outranks_error_in_the_reported_reason(cfg, store):
+    r = run_scan([lis(400.0)], cfg, store, NOW, post=Poster(), verify=None, require_live=True)
+    assert r.unverifiable == "no key"
+    r2 = run_scan([make_deal(destination="LHR", price_usd=400.0)], cfg, Store(":memory:"), NOW, post=Poster(),
+                  verify=scripted([SourceError("x")], []), require_live=True)
+    assert r2.unverifiable == "error"

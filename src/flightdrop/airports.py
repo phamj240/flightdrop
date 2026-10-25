@@ -121,6 +121,26 @@ def find_by_city(name: str) -> list[Airport]:
     return sorted(_by_city().get(_norm_city(name), []), key=lambda a: a.iata)
 
 
+# Google Flights wants airport codes; the fare data uses metro codes. Maps each metro code (or former
+# code) to the airports Google should search, e.g. ROM -> Fiumicino + Ciampino.
+_METRO_AIRPORTS = {
+    "BJS": ("PEK", "PKX"), "BUE": ("EZE", "AEP"), "BUH": ("OTP", "BBU"), "CHI": ("ORD", "MDW"),
+    "DTT": ("DTW",), "JKT": ("CGK", "HLP"), "LON": ("LHR", "LGW", "STN", "LTN", "LCY", "SEN"),
+    "MIL": ("MXP", "LIN", "BGY"), "MOW": ("SVO", "DME", "VKO"), "NYC": ("JFK", "LGA", "EWR"),
+    "OSA": ("KIX", "ITM"), "PAR": ("CDG", "ORY"), "REK": ("KEF", "RKV"), "RIO": ("GIG", "SDU"),
+    "ROM": ("FCO", "CIA"), "SAO": ("GRU", "CGH", "VCP"), "SEL": ("ICN", "GMP"), "SPK": ("CTS",),
+    "STO": ("ARN", "BMA"), "TCI": ("TFN", "TFS"), "TYO": ("HND", "NRT"), "WAS": ("IAD", "DCA", "BWI"),
+    "YMQ": ("YUL",), "YTO": ("YYZ", "YTZ"), "ORL": ("MCO", "SFB"),
+    "FRU": ("BSZ",), "TSE": ("NQZ",),
+}
+
+
+def airport_codes_for(code: str) -> tuple[str, ...]:
+    """Airport codes to search for a fare-data destination: a metro code expands, anything else is itself."""
+    code = code.upper()
+    return _METRO_AIRPORTS.get(code, (code,))
+
+
 _COUNTRY_NAMES = {
     "US": "US", "CA": "Canada", "MX": "Mexico", "GT": "Guatemala", "CR": "Costa Rica", "PA": "Panama",
     "BZ": "Belize", "HN": "Honduras", "SV": "El Salvador", "NI": "Nicaragua", "CU": "Cuba",

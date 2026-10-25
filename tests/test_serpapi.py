@@ -72,3 +72,14 @@ def test_deals_without_a_route_or_dates_are_not_looked_up():
     for d in (make_deal(destination=None), make_deal(depart_date=None), make_deal(return_date=None)):
         value, session = price(d)
         assert value is None and session.calls == []
+
+
+def test_metro_codes_are_expanded_to_airport_lists_for_google():
+    deal = make_deal(origin="DFW", destination="ROM")
+    _, s = price(deal)
+    params = s.calls[0][1]
+    assert (params["departure_id"], params["arrival_id"]) == ("DFW", "FCO,CIA")
+    _, s2 = price(make_deal(origin="MSP", destination="TYO"))
+    assert s2.calls[0][1]["arrival_id"] == "HND,NRT"
+    _, s3 = price(make_deal(origin="MSP", destination="LIS"))
+    assert (s3.calls[0][1]["departure_id"], s3.calls[0][1]["arrival_id"]) == ("MSP", "LIS")        # plain airports unchanged

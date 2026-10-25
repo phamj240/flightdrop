@@ -17,6 +17,7 @@ import tempfile
 from datetime import datetime, timezone
 from functools import partial
 from typing import Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import requests
 import yaml
@@ -166,12 +167,19 @@ def main(
         db_path = os.path.join(scratch, "dry-run.sqlite")
         if os.path.exists(args.db):
             shutil.copyfile(args.db, db_path)
+    # Only deals whose live Google price was checked may go out (a dry run never spends the quota).
+    require_live = cfg.verify.enabled and cfg.verify.require_live and not args.dry_run
+    if require_live and verify is None:
+        log.warning("live price checking is required but SERPAPI_KEY is not set: deals will be held")
+
     store = Store(db_path)
     try:
         result = pipeline.run_scan(
             deals, cfg, store, now, post=post, verify=verify, alternative=alternative,
-            alerts_allowed=alerts_allowed,
+            alerts_allowed=alerts_allowed, require_live=require_live,
         )
+        if result.unverifiable and webhook and not args.dry_run:
+            _notify_unverifiable(webhook, result, store, cfg, now, session)
     finally:
         store.close()
         if scratch:
@@ -181,9 +189,36 @@ def main(
         "%d candidates, %d qualified, %d new, %d slot(s) left today -> %d alert(s)%s",
         result.candidates, result.qualified, result.new, result.slots, len(result.alerts),
         (f" ({result.failed_posts} failed to post)" if result.failed_posts else "")
-        + (f" ({result.held} held for the alert hours)" if result.held else ""),
+        + (f" ({result.held} held for the alert hours)" if result.held else "")
+        + (f" ({result.held_unverified} held: live price not checked)" if result.held_unverified else ""),
     )
     return 0
+
+
+def _notify_unverifiable(
+    webhook: str, result: pipeline.RunResult, store: Store, cfg: Config, now: datetime, session: requests.Session
+) -> None:
+    """Tell the user, at most once a day, that deals are waiting because checking is impossible."""
+    day = now.astimezone(ZoneInfo(cfg.timezone)).date().isoformat()
+    if store.usage_on("notice-verify", day) > 0:
+        return
+    if result.unverifiable == "no key":
+        message = (
+            f"{result.held_unverified} deal(s) are waiting: live price checking is required but no SerpApi key is set. "
+            "Add a free key as the SERPAPI_KEY secret in the GitHub repo (Settings > Secrets and variables > Actions) "
+            "to resume alerts."
+        )
+    else:
+        message = (
+            f"{result.held_unverified} deal(s) are waiting: the live price check (SerpApi) is failing. "
+            "Open the latest run in the repo's Actions tab to see why."
+        )
+    try:
+        discord.post_notice(webhook, message, session)
+    except discord.NotifyError as e:
+        log.error("could not send the notice: %s", e)
+        return
+    store.add_usage("notice-verify", day)
 
 
 def _post_discord(webhook: str, s: ScoredDeal, session: requests.Session) -> None:

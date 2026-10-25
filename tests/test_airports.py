@@ -73,3 +73,19 @@ def test_every_country_the_user_cares_about_has_airports_in_the_table():
     from flightdrop.airports import find_by_city, lookup
     for code in ("GUA", "ZRH", "GVA", "FCO", "MXP", "VCE", "DPS", "CGK", "NRT", "HND", "KIX", "SGN", "HAN", "FRU", "BSZ", "OSS", "ALA", "NQZ", "TSE", "ROM", "MIL", "TYO", "OSA"):
         assert lookup(code) is not None, code
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("ROM", ("FCO", "CIA")), ("TYO", ("HND", "NRT")), ("MIL", ("MXP", "LIN", "BGY")), ("NYC", ("JFK", "LGA", "EWR")),
+    ("LON", ("LHR", "LGW", "STN", "LTN", "LCY", "SEN")), ("FRU", ("BSZ",)), ("TSE", ("NQZ",)),
+    ("ORL", ("MCO", "SFB")), ("DFW", ("DFW",)), ("zrh", ("ZRH",)),
+])
+def test_metro_codes_expand_to_airports_for_google(code, expected):
+    from flightdrop.airports import airport_codes_for
+    assert airport_codes_for(code) == expected
+
+
+def test_every_metro_expansion_is_made_of_real_airport_codes():
+    from flightdrop.airports import _METRO_AIRPORTS
+    for metro, airports in _METRO_AIRPORTS.items():
+        assert airports and all(len(a) == 3 and a.isalpha() and a.isupper() for a in airports), metro

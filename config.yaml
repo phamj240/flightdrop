@@ -86,12 +86,16 @@ thresholds_by_country:
 # Re-alert an already-posted deal only if the price dropped by at least this fraction.
 realert_min_drop: 0.10
 
-# Optional live-price confirmation via SerpApi (free plan: 250 searches/month).
+# Live-price check against Google Flights (the same prices your alert links show), via SerpApi
+# (free plan: 250 searches/month). The cached fares alone were found to be days old and often from
+# discount agencies whose prices don't hold, so each alert is checked first and its price replaced with
+# Google's. A fare that no longer beats your price bars is dropped.
 verify:
   enabled: true
+  require_live: true             # a deal that can't be checked is held, never posted unverified
   daily_budget: 6
   monthly_budget: 240
-  max_live_over_cached: 1.15     # drop the deal if the live price is >15% above the cached one
+  max_live_over_cached: 1.15     # also drop the deal if the live price is >15% above the cached one
 
 # Human-curated deal feeds. Only posts departing from a keyword city are kept (title + link only).
 # These feeds rarely mention any one airport, so expect an occasional extra deal, not a stream.

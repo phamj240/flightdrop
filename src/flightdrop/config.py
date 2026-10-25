@@ -29,6 +29,8 @@ class VerifyConfig:
     daily_budget: int
     monthly_budget: int
     max_live_over_cached: float
+    # True: a fare that can't be checked against Google's live price is held, never posted unverified.
+    require_live: bool = False
 
 
 @dataclass(frozen=True)
@@ -296,6 +298,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             daily_budget=int(ver["daily_budget"]),
             monthly_budget=int(ver["monthly_budget"]),
             max_live_over_cached=float(ver["max_live_over_cached"]),
+            require_live=bool(ver.get("require_live", False)),
         ),
         thresholds_usd={r: {c: float(v) for c, v in d.items()} for r, d in thresholds.items()},
         rss=RssConfig(

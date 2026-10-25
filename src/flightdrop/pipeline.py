@@ -1,10 +1,10 @@
-"""One scan: score candidates, drop repeats, rank, cap, optionally verify, then post."""
+"""One scan: score candidates, drop repeats, rank, cap, confirm against live prices, then post."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, replace
-from datetime import datetime, time, timezone
+from datetime import date, datetime, time, timezone
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -35,6 +35,8 @@ class RunResult:
     verified: int = 0
     dropped_after_verify: int = 0
     held: int = 0          # new deals waiting for the next scan inside the alert hours
+    held_unverified: int = 0           # deals held because their live price could not be checked
+    unverifiable: str | None = None    # "no key" or "error" if checking was impossible (not just out of quota)
 
 
 def in_alert_hours(now: datetime, cfg: Config) -> bool:
@@ -72,33 +74,64 @@ def _cheapest_per_watch(scored: list[ScoredDeal]) -> list[ScoredDeal]:
     return [s for s in scored if not s.watch_key or best[s.watch_key] is s]
 
 
-def _verify_one(
-    s: ScoredDeal, cfg: Config, store: Store, verify: VerifyFn, now: datetime, result: RunResult
-) -> ScoredDeal | None:
-    """Return the deal (possibly marked live-verified) or None if the live price is clearly worse."""
+def _check_live(
+    s: ScoredDeal,
+    cfg: Config,
+    store: Store,
+    verify: VerifyFn | None,
+    now: datetime,
+    today: date,
+    result: RunResult,
+) -> tuple[ScoredDeal | None, str]:
+    """Confirm a deal against Google's live price.
+
+    Returns ``(deal, "live")`` when the live price is known and still qualifies (the deal then
+    carries the live price and reasons), ``(None, "dropped")`` when it no longer qualifies, or
+    ``(None, "unavailable:<why>")`` when it could not be checked (no key, budget used up, API
+    error, Google had no results). Results are remembered for 24h so the free quota is not spent
+    twice on the same fare.
+    """
     deal = s.deal
-    if deal.curated or deal.price_usd is None:
-        return s
-    day = now.astimezone(ZoneInfo(cfg.timezone)).date().isoformat()
-    if (
-        store.usage_on(SERPAPI, day) >= cfg.verify.daily_budget
-        or store.usage_in_month(SERPAPI, day[:7]) >= cfg.verify.monthly_budget
-    ):
-        return s   # out of budget: post it labelled as a cached price
-    store.add_usage(SERPAPI, day)
-    try:
-        live = verify(deal)
-    except SourceError as e:
-        log.warning("live check failed for %s: %s", deal.deal_key, e)
-        return s
-    if live is None:
-        return s
+    remembered = store.recent_live_check(deal.deal_key, deal.price_usd, now)
+    if remembered is not None:
+        outcome, live = remembered
+        if outcome == "dropped":
+            return None, "dropped"
+        if outcome == "nodata":
+            return None, "unavailable:nodata"
+    else:
+        if verify is None:
+            return None, "unavailable:no key"
+        day = today.isoformat()
+        if (
+            store.usage_on(SERPAPI, day) >= cfg.verify.daily_budget
+            or store.usage_in_month(SERPAPI, day[:7]) >= cfg.verify.monthly_budget
+        ):
+            return None, "unavailable:budget"
+        store.add_usage(SERPAPI, day)
+        try:
+            live = verify(deal)
+        except SourceError as e:
+            log.warning("live check failed for %s: %s", deal.deal_key, e)
+            return None, "unavailable:error"
+        if live is None:
+            store.save_live_check(deal.deal_key, deal.price_usd, None, "nodata", now)
+            return None, "unavailable:nodata"
+
     result.verified += 1
-    if live > deal.price_usd * cfg.verify.max_live_over_cached:
-        log.info("dropping %s: cached $%.0f but live $%.0f", deal.deal_key, deal.price_usd, live)
+    rescored = None
+    if live <= deal.price_usd * cfg.verify.max_live_over_cached:
+        # The live price must still earn an alert on its own: same price bars, filters and watch rules.
+        samples = cfg.relative.min_samples if s.median_usd is not None else 0
+        rescored = evaluate(replace(deal, price_usd=live), cfg, s.median_usd, samples, today,
+                            watch_previous=store.watch_price)
+    if rescored is None:
+        log.info("dropping %s: cached $%.0f but live $%.0f no longer qualifies", deal.deal_key, deal.price_usd, live)
+        store.save_live_check(deal.deal_key, deal.price_usd, live, "dropped", now)
         result.dropped_after_verify += 1
-        return None
-    return replace(s, verification="live", live_price_usd=live)
+        return None, "dropped"
+    store.save_live_check(deal.deal_key, deal.price_usd, live, "ok", now)
+    return replace(rescored, deal=deal, verification="live", live_price_usd=live), "live"
 
 
 def _with_alternative(s: ScoredDeal, alternative: AlternativeFn) -> ScoredDeal:
@@ -120,14 +153,20 @@ def run_scan(
     verify: VerifyFn | None = None,
     alternative: AlternativeFn | None = None,
     alerts_allowed: bool = True,
+    require_live: bool = False,
 ) -> RunResult:
     """Process one batch of candidate deals. ``post`` raises NotifyError on failure.
 
     With ``alerts_allowed=False`` (outside the alert hours) everything runs except posting:
     prices are still recorded and deals scored, but nothing is verified, looked up, posted
     or logged as sent, so the held deals go out at the first scan inside the window.
+
+    With ``require_live=True`` a deal whose live price cannot be checked is held (not posted, not
+    logged as sent) instead of being posted as an unverified cached price.
     """
     result = RunResult(candidates=len(deals))
+    today = now.astimezone(ZoneInfo(cfg.timezone)).date()
+    unavailable: set[str] = set()
 
     store.prune(now)    # expire old history first, so an expired watch price can't block this scan
     scored = _score_all(deals, cfg, store, now)
@@ -156,9 +195,17 @@ def run_scan(
     for s in rank_and_cap(fresh, len(fresh)):   # best first
         if len(result.alerts) >= result.slots:
             break
-        chosen = _verify_one(s, cfg, store, verify, now, result) if verify else s
-        if chosen is None:
-            continue
+        chosen = s
+        if not (s.deal.curated or s.deal.price_usd is None) and (verify is not None or require_live):
+            checked, status = _check_live(s, cfg, store, verify, now, today, result)
+            if checked is not None:
+                chosen = checked
+            elif status == "dropped":
+                continue
+            elif require_live:                       # could not be checked: hold it for a later scan
+                result.held_unverified += 1
+                unavailable.add(status)
+                continue
         if alternative and chosen.deal.airline in cfg.airlines.alternatives_for:
             chosen = _with_alternative(chosen, alternative)
         try:
@@ -169,9 +216,13 @@ def run_scan(
             continue
         store.record_alert(chosen.deal.deal_key, chosen.live_price_usd or chosen.deal.price_usd, now)
         if chosen.watch_key:
-            # Compare like with like next time: the cached fare that triggered this alert.
-            store.set_watch_price(chosen.watch_key, chosen.deal.price_usd, now)
+            # The price just alerted (the live one when it was checked) is the bar for next time.
+            store.set_watch_price(chosen.watch_key, chosen.live_price_usd or chosen.deal.price_usd, now)
         result.alerts.append(chosen)
 
+    if "unavailable:no key" in unavailable:
+        result.unverifiable = "no key"
+    elif "unavailable:error" in unavailable:
+        result.unverifiable = "error"
     store.db.commit()
     return result

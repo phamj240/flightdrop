@@ -12,6 +12,7 @@ from typing import Callable
 
 import requests
 
+from ..airports import airport_codes_for
 from ..models import Deal
 from .common import SourceError, get_json
 
@@ -36,8 +37,8 @@ def live_price(
         return None
     params = {
         "engine": "google_flights",
-        "departure_id": deal.origin,
-        "arrival_id": deal.destination,
+        "departure_id": ",".join(airport_codes_for(deal.origin)),
+        "arrival_id": ",".join(airport_codes_for(deal.destination)),
         "outbound_date": deal.depart_date.isoformat(),
         "return_date": deal.return_date.isoformat(),
         "type": 1,                                  # round trip

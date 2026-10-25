@@ -19,7 +19,7 @@ CONFIG = str(BASELINE_CONFIG)
 def run(tmp_path, monkeypatch):
     """Run the CLI with a temp DB, fake sources, and a recording Discord poster."""
     state = {"deals": [make_deal(price_usd=400.0)], "posted": [], "notices": [], "fail_tp": False, "fail_rss": False,
-             "alt_calls": []}
+             "alt_calls": [], "live_calls": [], "live_price": None}
 
     def fake_tp(cfg, token, now, session=None, sleep=None):
         if state["fail_tp"]:
@@ -35,6 +35,14 @@ def run(tmp_path, monkeypatch):
         state["alt_calls"].append(deal.destination)      # tests must never reach the live API
         return make_deal(destination=deal.destination, origin=deal.origin, price_usd=150.0, airline="AA", stops=1)
 
+    def fake_live(deal, api_key, session=None, sleep=None):
+        state["live_calls"].append((deal.destination, api_key))     # tests must never reach SerpApi
+        if state.get("live_error"):
+            raise SourceError("HTTP 500")
+        price = state["live_price"]
+        return deal.price_usd if price is None else price
+
+    monkeypatch.setattr(cli, "live_price", fake_live)
     monkeypatch.setattr(travelpayouts, "fetch", fake_tp)
     monkeypatch.setattr(travelpayouts, "find_alternative", fake_alt)
     monkeypatch.setattr(rss_deals, "fetch", fake_rss)
@@ -199,3 +207,73 @@ def test_a_dry_run_shows_results_at_any_hour_and_still_changes_nothing(run, wind
 
 def test_without_a_window_alerts_go_out_at_any_hour(run):
     assert run(now=NIGHT) == 0 and len(run.state["posted"]) == 1
+
+
+# --- live price checks (SerpApi) ---------------------------------------------------------------
+
+SERP = "serp-secret-key"
+ENV_WITH_KEY = {"TRAVELPAYOUTS_TOKEN": TOKEN, "DISCORD_WEBHOOK_URL": HOOK, "SERPAPI_KEY": SERP}
+
+
+@pytest.fixture
+def required(tmp_path):
+    path = tmp_path / "required.yaml"
+    path.write_text(BASELINE_CONFIG.read_text().replace("verify:\n  enabled: true\n", "verify:\n  enabled: true\n  require_live: true\n"))
+    return str(path)
+
+
+def test_a_checked_alert_carries_the_live_google_price(run, required):
+    run.state["live_price"] = 430.0
+    assert run(config=required, env=ENV_WITH_KEY, now=MIDDAY) == 0
+    (_, scored), = run.state["posted"]
+    assert (scored.verification, scored.live_price_usd, scored.deal.price_usd) == ("live", 430.0, 400.0)
+    assert run.state["live_calls"] == [("LIS", SERP)]
+
+
+def test_required_live_without_a_key_holds_deals_and_sends_one_notice_a_day(run, required):
+    assert run(config=required, now=MIDDAY) == 0
+    assert run.state["posted"] == []
+    assert len(run.state["notices"]) == 1 and "no SerpApi key" in run.state["notices"][0] and "SERPAPI_KEY" in run.state["notices"][0]
+    run(config=required, now=MIDDAY.replace(hour=20))                              # same Central day: no second notice
+    assert len(run.state["notices"]) == 1
+    run(config=required, now=MIDDAY.replace(day=3))                                # next day: a reminder
+    assert len(run.state["notices"]) == 2
+
+
+def test_deals_held_for_a_missing_key_post_once_the_key_is_added(run, required):
+    run(config=required, now=MIDDAY)
+    assert run.state["posted"] == []
+    run.state["live_price"] = 410.0
+    run(config=required, env=ENV_WITH_KEY, now=MIDDAY.replace(hour=20))
+    assert [s.live_price_usd for _, s in run.state["posted"]] == [410.0]
+
+
+def test_a_failing_live_check_holds_deals_and_says_so(run, required):
+    run.state["live_error"] = True
+    assert run(config=required, env=ENV_WITH_KEY, now=MIDDAY) == 0
+    assert run.state["posted"] == []
+    assert len(run.state["notices"]) == 1 and "failing" in run.state["notices"][0]
+
+
+def test_a_dry_run_never_spends_the_live_check_quota_and_ignores_require_live(run, required, capsys):
+    assert run("--dry-run", config=required, env=ENV_WITH_KEY, now=MIDDAY) == 0
+    assert "WOULD ALERT: MSP→LIS economy $400" in capsys.readouterr().out
+    assert run.state["live_calls"] == [] and run.state["notices"] == []
+
+
+def test_without_require_live_a_key_still_checks_and_a_missing_key_still_posts(run):
+    run.state["live_price"] = 420.0
+    run(env=ENV_WITH_KEY, now=MIDDAY)                                              # baseline config: require_live off
+    assert run.state["posted"][0][1].live_price_usd == 420.0
+    run.state["posted"].clear()
+    run.state["deals"] = [make_deal(destination="LHR", price_usd=400.0)]
+    run(now=MIDDAY)                                                                # no key: posts as cached
+    assert [s.verification for _, s in run.state["posted"]] == ["cached"]
+
+
+def test_the_serpapi_key_is_never_printed(run, required, capsys, caplog):
+    caplog.set_level("DEBUG")
+    run(config=required, env=ENV_WITH_KEY, now=MIDDAY)
+    run("--dry-run", config=required, env=ENV_WITH_KEY, now=MIDDAY)
+    captured = capsys.readouterr()
+    assert SERP not in captured.out + captured.err + caplog.text

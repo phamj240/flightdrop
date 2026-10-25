@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS watch_state(
   last_price REAL NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS live_checks(
+  deal_key TEXT PRIMARY KEY,
+  cached_price REAL NOT NULL,
+  live_price REAL,
+  outcome TEXT NOT NULL,
+  checked_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS api_usage(
   day TEXT NOT NULL,
   service TEXT NOT NULL,
@@ -42,6 +49,8 @@ CREATE TABLE IF NOT EXISTS api_usage(
 OBSERVATION_RETENTION_DAYS = 90
 ALERT_RETENTION_DAYS = 180
 WATCH_STATE_RETENTION_DAYS = 90     # a moving watch forgets its last price after this long
+LIVE_CHECK_MEMORY_HOURS = 24        # don't pay for the same live check twice in a day
+LIVE_CHECK_RETENTION_DAYS = 3
 
 
 def _iso(dt: datetime) -> str:
@@ -139,6 +148,23 @@ class Store:
         )
         self.db.commit()
 
+    # --- live price checks -------------------------------------------------
+
+    def recent_live_check(self, deal_key: str, cached_price: float, now: datetime) -> tuple[str, float | None] | None:
+        """(outcome, live_price) of a check of this exact deal at this cached price in the last day."""
+        row = self.db.execute(
+            "SELECT outcome, live_price FROM live_checks WHERE deal_key = ? AND cached_price = ? AND checked_at >= ?",
+            (deal_key, cached_price, _iso(now - timedelta(hours=LIVE_CHECK_MEMORY_HOURS))),
+        ).fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def save_live_check(self, deal_key: str, cached_price: float, live_price: float | None, outcome: str, now: datetime) -> None:
+        self.db.execute(
+            "INSERT OR REPLACE INTO live_checks(deal_key, cached_price, live_price, outcome, checked_at) VALUES (?, ?, ?, ?, ?)",
+            (deal_key, cached_price, live_price, outcome, _iso(now)),
+        )
+        self.db.commit()
+
     # --- API budgets ---------------------------------------------------
 
     def usage_on(self, service: str, day: str) -> int:
@@ -173,6 +199,10 @@ class Store:
         self.db.execute(
             "DELETE FROM alerts WHERE alerted_at < ?",
             (_iso(now - timedelta(days=ALERT_RETENTION_DAYS)),),
+        )
+        self.db.execute(
+            "DELETE FROM live_checks WHERE checked_at < ?",
+            (_iso(now - timedelta(days=LIVE_CHECK_RETENTION_DAYS)),),
         )
         self.db.execute(
             "DELETE FROM watch_state WHERE updated_at < ?",
