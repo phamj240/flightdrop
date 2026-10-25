@@ -1,7 +1,7 @@
 # flightdrop
 
 A personal flight-deal alert bot. Every few hours it looks for cheap round-trip fares out of your home
-airports (set to **MSP** and **DFW**), decides which are worth your attention, and posts them to a
+airport (set to **MSP**; add more under `home_airports` in `config.yaml`), decides which are worth your attention, and posts them to a
 Discord channel with a one-click Google Flights link. It costs **$0** to run: no paid APIs, no credit card.
 
 It is a DIY take on apps like DailyDrop, for cash fares only (points/award search is not included).
@@ -32,7 +32,8 @@ Why these times, from the research and from measuring the data:
 
 - The cached fares are a median of about 3.6 days old and are refreshed around the clock by travelers' searches, so
   scanning more often than a few times a day finds little that's new.
-- TheFlightDeal posts its daily Dallas deal around midday Central, so the 12:15 and 3:15 PM scans catch it.
+- TheFlightDeal posts its daily deals around midday Central, so the 12:15 and 3:15 PM scans catch them (it has no
+  Minneapolis feed, so this matters little unless you add Dallas back).
 - Mistake fares (error fares) usually die within hours. This bot's cached data can't catch those; it is built for
   good deals that last days. Catching error fares needs a faster, paid source.
 - Published advice about the "best day or time to book" is mostly folklore, so the timing is about your waking hours,
@@ -46,7 +47,7 @@ edit the `cron` lines in `.github/workflows/scan.yml` (they are in UTC).
 | Source | What it gives | Catch |
 |---|---|---|
 | Aviasales / Travelpayouts Data API | Cheapest cached economy fares from your airports to ~100-200 destinations | Prices are cached (up to ~7 days old), not live; no business class |
-| TheFlightDeal RSS (main + Dallas feeds) | Human-found deals; about one Dallas deal a day, posted around midday Central | Rarely mentions any one airport; no Minneapolis feed |
+| TheFlightDeal RSS (all-cities feed) | Human-found deals, posted around midday Central | Rarely mentions any one airport; no Minneapolis feed |
 | SerpApi Google Flights | Checks every fare's live Google Flights price before it is posted | 250 free searches/month, so about 8 a day |
 
 ### Why every alert is checked against Google

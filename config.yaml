@@ -2,7 +2,7 @@
 # they come from environment variables / GitHub Actions secrets.
 # To change anything: edit this file (or ask Claude to). Invalid edits fail with a clear error.
 
-home_airports: [MSP, DFW]
+home_airports: [MSP]
 cabins: [economy, business]      # the fare data is economy-only; business deals appear only when a deal-feed post mentions one
 timezone: America/Chicago        # used for the alert hours and the "5 alerts per day" count
 max_alerts_per_day: 5
@@ -99,13 +99,13 @@ verify:
 
 # Human-curated deal feeds. Only posts departing from a keyword city are kept (title + link only).
 # These feeds rarely mention any one airport, so expect an occasional extra deal, not a stream.
-# TheFlightDeal posts about one Dallas deal a day around midday Central; it has no Minneapolis feed.
+# TheFlightDeal has no Minneapolis feed; its all-cities feed only occasionally mentions Minneapolis, so
+# expect almost nothing from this source.
 # Not used: Secret Flying (blocks automated requests), Fly4Free (Europe only), r/flightdeals (its
 # reachable feed is a frozen ~3-year-old snapshot and the live feeds are blocked).
 rss:
   enabled: true
   max_age_hours: 48              # ignore older posts (fares expire fast)
-  keywords: [MSP, Minneapolis, DFW, Dallas]
+  keywords: [MSP, Minneapolis]
   feeds:
     theflightdeal: https://www.theflightdeal.com/feed/                 # all cities, last ~day
-    theflightdeal_dallas: https://www.theflightdeal.com/category/dallas/feed/   # Dallas, last ~2 weeks

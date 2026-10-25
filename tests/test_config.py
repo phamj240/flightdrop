@@ -26,7 +26,7 @@ def test_baseline_config_loads(cfg):
 
 
 def test_the_real_config_yaml_loads_and_has_the_users_destinations(shipped_cfg):
-    assert shipped_cfg.home_airports == ("MSP", "DFW")
+    assert shipped_cfg.home_airports == ("MSP",)
     assert shipped_cfg.destinations.include_regions == ("europe",)
     assert set(shipped_cfg.destinations.include_countries) == {"GT", "ID", "JP", "VN", "KG", "KZ"}
     assert set(shipped_cfg.destinations.exclude_countries) == {"IQ", "AF", "SY", "YE", "LY", "SO", "SD", "SS", "RU", "BY"}
@@ -179,3 +179,12 @@ def test_require_live_defaults_off_and_the_real_config_turns_it_on(raw, cfg, shi
     raw["verify"]["require_live"] = True
     assert parse_config(raw).verify.require_live is True
     assert shipped_cfg.verify.enabled is True and shipped_cfg.verify.require_live is True
+
+
+def test_the_real_config_scans_only_from_minneapolis_and_its_feed_keywords_match(shipped_cfg):
+    from flightdrop.sources import rss_deals
+    assert shipped_cfg.home_airports == ("MSP",)
+    assert set(shipped_cfg.rss.feeds) == {"theflightdeal"}
+    origins = {o for _, o in rss_deals._keyword_origins(shipped_cfg)}
+    assert origins == {"MSP"}                        # every keyword maps to MSP; none is silently ignored
+    assert len(rss_deals._keyword_origins(shipped_cfg)) == len(shipped_cfg.rss.keywords)

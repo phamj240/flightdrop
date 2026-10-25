@@ -287,4 +287,4 @@ def test_the_users_memphis_watch_is_queried_directly_even_though_memphis_is_not_
     session = FakeSession(ok)
     tp.fetch(shipped_cfg, "T", NOW, session=session, sleep=lambda s: None)
     queries = [(q["origin"], q["destination"]) for _, q, _ in session.calls]
-    assert queries == [("MSP", "-"), ("DFW", "-"), ("MEM", "MSP")]
+    assert queries == [("MSP", "-"), ("MEM", "MSP")]
