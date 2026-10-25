@@ -83,13 +83,23 @@ airlines:
   include: []                               # or list the only carriers you'll fly
   alternatives_for: [F9, NK]                # alerts on these also show the cheapest fare on ANY OTHER airline
 watchlist:
-  - {to: NRT, cabin: economy, max_price_usd: 800}
-  - {from: MSP, to: LIS, cabin: business, max_price_usd: 1500}
+  - {to: NRT, cabin: economy, max_price_usd: 800}                      # fixed target: alert at or under $800
+  - {from: MEM, to: MSP, alert_when: lower_than_previous}              # moving target: see below
 trip:
   min_days: 4
   max_days: 14
   depart_months: [3, 4, 10]
 ```
+
+### Watchlist: fixed and moving targets
+
+A **fixed** entry (`max_price_usd: 800`) alerts whenever a fare is at or under that price. A **moving** entry
+(`alert_when: lower_than_previous`) has no price of its own: it alerts on the first fare it sees for the route as a
+starting point, then only when a fare is at least $1 lower than the last one it alerted you about. Each alert
+lowers the bar for the next. You can add `max_price_usd` to a moving entry as a ceiling. The bot forgets the last
+price after 90 days, so one freak low fare can't block alerts forever. Watchlist entries may start from any airport
+(not just your home airports), but the fare data only has routes that travelers have recently searched, so a quiet
+route can stay quiet. Business class can't be checked.
 
 ## Running it on your own computer
 

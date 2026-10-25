@@ -146,3 +146,29 @@ def test_alternatives_for_defaults_and_validation(raw, cfg):
     with pytest.raises(ConfigError, match="airlines.alternatives_for"):
         parse_config(mutated(raw, lambda r: r.update(airlines={"alternatives_for": ["Frontier"]})))
     assert parse_config(mutated(raw, lambda r: r.update(airlines={}))).airlines.alternatives_for == ()
+
+
+# --- watchlist: moving target ---------------------------------------------------------------
+
+def test_moving_watch_entries_parse(raw):
+    r = mutated(raw, lambda r: r.update(watchlist=[
+        {"from": "MEM", "to": "MSP", "alert_when": "lower_than_previous"},
+        {"to": "LIS", "alert_when": "Lower_Than_Previous", "max_price_usd": 400},
+        {"to": "NRT", "max_price_usd": 800},
+    ]))
+    a, b, c = parse_config(r).watchlist
+    assert (a.lower_than_previous, a.max_price_usd, a.origins) == (True, None, ("MEM",))
+    assert (b.lower_than_previous, b.max_price_usd) == (True, 400.0)
+    assert (c.lower_than_previous, c.max_price_usd) == (False, 800.0)
+
+
+@pytest.mark.parametrize("entry,message", [
+    ({"to": "MSP"}, r"watchlist\[0\] needs"),
+    ({"to": "MSP", "alert_when": "cheaper"}, "alert_when must be"),
+    ({"to": "MSP", "alert_when": "lower_than_previous", "max_price_usd": -1}, "positive"),
+    ({"to": "MSP", "alert_when": "lower_than_previous", "max_price_usd": "x"}, "must be a number"),
+    ({"alert_when": "lower_than_previous"}, r"watchlist\[0\] needs"),
+])
+def test_invalid_moving_watch_entries(raw, entry, message):
+    with pytest.raises(ConfigError, match=message):
+        parse_config(mutated(raw, lambda r: r.update(watchlist=[entry])))

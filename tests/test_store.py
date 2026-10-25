@@ -120,3 +120,23 @@ def test_store_persists_to_disk(tmp_path):
     again = Store(path)
     assert again.last_alert_price("k") == 123.0
     again.close()
+
+
+# --- moving watch state ------------------------------------------------------------------------
+
+def test_watch_price_roundtrip_and_update(store):
+    assert store.watch_price("MEM-MSP-economy") is None
+    store.set_watch_price("MEM-MSP-economy", 320.0, NOW)
+    assert store.watch_price("MEM-MSP-economy") == 320.0
+    store.set_watch_price("MEM-MSP-economy", 310.0, NOW + timedelta(hours=3))        # overwrites, no duplicate row
+    assert store.watch_price("MEM-MSP-economy") == 310.0
+    assert store.watch_price("MSP-MEM-economy") is None                                # per route
+    assert store.db.execute("SELECT COUNT(*) FROM watch_state").fetchone()[0] == 1
+
+
+def test_watch_price_expires_after_90_days(store):
+    store.set_watch_price("MEM-MSP-economy", 320.0, NOW)
+    store.prune(NOW + timedelta(days=89))
+    assert store.watch_price("MEM-MSP-economy") == 320.0
+    store.prune(NOW + timedelta(days=91))
+    assert store.watch_price("MEM-MSP-economy") is None                                # starts fresh: next fare is a new baseline

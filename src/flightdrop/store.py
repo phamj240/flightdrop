@@ -26,6 +26,11 @@ CREATE TABLE IF NOT EXISTS alerts(
 );
 CREATE INDEX IF NOT EXISTS idx_alerts_deal ON alerts(deal_key);
 CREATE INDEX IF NOT EXISTS idx_alerts_time ON alerts(alerted_at);
+CREATE TABLE IF NOT EXISTS watch_state(
+  watch_key TEXT PRIMARY KEY,
+  last_price REAL NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS api_usage(
   day TEXT NOT NULL,
   service TEXT NOT NULL,
@@ -36,6 +41,7 @@ CREATE TABLE IF NOT EXISTS api_usage(
 
 OBSERVATION_RETENTION_DAYS = 90
 ALERT_RETENTION_DAYS = 180
+WATCH_STATE_RETENTION_DAYS = 90     # a moving watch forgets its last price after this long
 
 
 def _iso(dt: datetime) -> str:
@@ -118,6 +124,21 @@ class Store:
         ).fetchone()
         return int(row[0])
 
+    # --- moving watchlist targets ------------------------------------------
+
+    def watch_price(self, watch_key: str) -> float | None:
+        """The last price alerted for a moving watch (None if never alerted or expired)."""
+        row = self.db.execute("SELECT last_price FROM watch_state WHERE watch_key = ?", (watch_key,)).fetchone()
+        return None if row is None else float(row[0])
+
+    def set_watch_price(self, watch_key: str, price: float, now: datetime) -> None:
+        self.db.execute(
+            "INSERT INTO watch_state(watch_key, last_price, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT(watch_key) DO UPDATE SET last_price = excluded.last_price, updated_at = excluded.updated_at",
+            (watch_key, price, _iso(now)),
+        )
+        self.db.commit()
+
     # --- API budgets ---------------------------------------------------
 
     def usage_on(self, service: str, day: str) -> int:
@@ -152,5 +173,9 @@ class Store:
         self.db.execute(
             "DELETE FROM alerts WHERE alerted_at < ?",
             (_iso(now - timedelta(days=ALERT_RETENTION_DAYS)),),
+        )
+        self.db.execute(
+            "DELETE FROM watch_state WHERE updated_at < ?",
+            (_iso(now - timedelta(days=WATCH_STATE_RETENTION_DAYS)),),
         )
         self.db.commit()

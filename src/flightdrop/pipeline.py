@@ -57,10 +57,19 @@ def _score_all(deals: list[Deal], cfg: Config, store: Store, now: datetime) -> l
         median, samples = (None, 0)
         if not deal.curated and deal.price_usd is not None:
             median, samples = store.usual_price(deal.route_key, cfg.relative.window_days, now)
-        s = evaluate(deal, cfg, median, samples, today)
+        s = evaluate(deal, cfg, median, samples, today, watch_previous=store.watch_price)
         if s:
             scored.append(s)
-    return scored
+    return _cheapest_per_watch(scored)
+
+
+def _cheapest_per_watch(scored: list[ScoredDeal]) -> list[ScoredDeal]:
+    """A moving watch alerts once per scan: the route query returns several options (by stops)."""
+    best: dict[str, ScoredDeal] = {}
+    for s in scored:
+        if s.watch_key and (s.watch_key not in best or s.deal.price_usd < best[s.watch_key].deal.price_usd):
+            best[s.watch_key] = s
+    return [s for s in scored if not s.watch_key or best[s.watch_key] is s]
 
 
 def _verify_one(
@@ -120,6 +129,7 @@ def run_scan(
     """
     result = RunResult(candidates=len(deals))
 
+    store.prune(now)    # expire old history first, so an expired watch price can't block this scan
     scored = _score_all(deals, cfg, store, now)
     # Record sightings only after scoring so a fare is never compared with itself. Curated
     # feed deals are already bargains, so they stay out of the "usual price" history.
@@ -128,9 +138,11 @@ def run_scan(
             store.record_observation(d, now)
     result.qualified = len(scored)
 
+    # A moving watch hit already beat the previous price, so the 10% re-alert rule doesn't apply to it.
     fresh = [
         s for s in scored
-        if should_alert(store.last_alert_price(s.deal.deal_key), s.deal.price_usd, cfg.realert_min_drop)
+        if s.watch_key
+        or should_alert(store.last_alert_price(s.deal.deal_key), s.deal.price_usd, cfg.realert_min_drop)
     ]
     result.new = len(fresh)
 
@@ -156,8 +168,10 @@ def run_scan(
             log.error("could not post %s: %s", chosen.deal.deal_key, e)
             continue
         store.record_alert(chosen.deal.deal_key, chosen.live_price_usd or chosen.deal.price_usd, now)
+        if chosen.watch_key:
+            # Compare like with like next time: the cached fare that triggered this alert.
+            store.set_watch_price(chosen.watch_key, chosen.deal.price_usd, now)
         result.alerts.append(chosen)
 
-    store.prune(now)
     store.db.commit()
     return result

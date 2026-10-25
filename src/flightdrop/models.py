@@ -60,3 +60,5 @@ class ScoredDeal:
     # carriers). ``alternative_checked`` separates "none found" from "didn't look".
     alternative: Deal | None = None
     alternative_checked: bool = False
+    # Set for moving-target watchlist hits: the route whose "previous price" this alert will update.
+    watch_key: str | None = None

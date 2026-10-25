@@ -86,7 +86,10 @@ class WatchItem:
     origins: tuple[str, ...]
     destination: str
     cabin: Cabin
-    max_price_usd: float
+    # Fixed target (or, with ``lower_than_previous``, an optional ceiling). None = no ceiling.
+    max_price_usd: float | None = None
+    # Moving target: alert on the first fare seen, then only on fares lower than the last alerted one.
+    lower_than_previous: bool = False
 
 
 @dataclass(frozen=True)
@@ -231,20 +234,27 @@ def _parse_watchlist(
     items = []
     for i, entry in enumerate(raw or []):
         where = f"watchlist[{i}]"
-        if not isinstance(entry, dict) or "to" not in entry or "max_price_usd" not in entry:
-            raise ConfigError(f"{where} needs at least 'to' and 'max_price_usd'")
+        if not isinstance(entry, dict) or "to" not in entry:
+            raise ConfigError(f"{where} needs 'to' and either 'max_price_usd' or alert_when: lower_than_previous")
+        moving = entry.get("alert_when")
+        if moving is not None and str(moving).strip().lower() != "lower_than_previous":
+            raise ConfigError(f"{where}.alert_when must be 'lower_than_previous'; got {moving!r}")
+        if "max_price_usd" not in entry and moving is None:
+            raise ConfigError(f"{where} needs 'max_price_usd' or alert_when: lower_than_previous")
         (dest,) = _codes([entry["to"]], 3, f"{where}.to")
         origins = _codes([entry["from"]], 3, f"{where}.from") if entry.get("from") else home
         cabin = str(entry.get("cabin", "economy")).lower()
         if cabin not in cabins:
             raise ConfigError(f"{where}.cabin '{cabin}' is not enabled in 'cabins' {list(cabins)}")
-        try:
-            price = float(entry["max_price_usd"])
-        except (TypeError, ValueError):
-            raise ConfigError(f"{where}.max_price_usd must be a number") from None
-        if price <= 0:
-            raise ConfigError(f"{where}.max_price_usd must be positive")
-        items.append(WatchItem(origins, dest, cabin, price))  # type: ignore[arg-type]
+        price = None
+        if "max_price_usd" in entry:
+            try:
+                price = float(entry["max_price_usd"])
+            except (TypeError, ValueError):
+                raise ConfigError(f"{where}.max_price_usd must be a number") from None
+            if price <= 0:
+                raise ConfigError(f"{where}.max_price_usd must be positive")
+        items.append(WatchItem(origins, dest, cabin, price, moving is not None))  # type: ignore[arg-type]
     return tuple(items)
 
 

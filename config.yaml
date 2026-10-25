@@ -25,10 +25,12 @@ destinations:
 # Ignores the destination filters and the price rules above/below (trip window still applies).
 # 'from' is optional and defaults to all home_airports.
 watchlist:
-  # Memphis -> Minneapolis round trip. The price is a starting guess. The fare data has no cached fares
-  # for this route yet, so this only fires once a traveler's search puts the route in the cache.
-  - {from: MEM, to: MSP, cabin: economy, max_price_usd: 250}
-#  - {to: NRT, cabin: economy, max_price_usd: 800}
+  # Memphis -> Minneapolis round trip with a MOVING target: alerts on the first fare seen, then only when
+  # a fare is at least $1 lower than the last one you were alerted about. (Add `max_price_usd: 400` to
+  # also set a ceiling.) The fare data has no cached fares for this route yet, so this only fires once
+  # a traveler's search puts the route in the cache.
+  - {from: MEM, to: MSP, cabin: economy, alert_when: lower_than_previous}
+#  - {to: NRT, cabin: economy, max_price_usd: 800}                 # fixed target
 #  - {from: MSP, to: LIS, cabin: business, max_price_usd: 1500}    # business can't be checked (no fare data)
 
 # --- Airlines -------------------------------------------------------------

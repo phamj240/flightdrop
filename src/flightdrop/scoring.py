@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Callable
 
 from .airports import country_for, country_name, region_for
 from .config import Config
@@ -13,13 +14,18 @@ CURATED_SCORE = 0.35
 
 
 def evaluate(
-    deal: Deal, cfg: Config, median: float | None, samples: int, today: date
+    deal: Deal,
+    cfg: Config,
+    median: float | None,
+    samples: int,
+    today: date,
+    watch_previous: Callable[[str], float | None] | None = None,
 ) -> ScoredDeal | None:
     """Return a ScoredDeal if the deal qualifies, else None.
 
     Order: trip filter -> airline filter -> watchlist -> destination filter -> fixed/relative rules.
     A watchlist match skips the destination filter and the price rules, but not the trip or
-    airline filters.
+    airline filters. ``watch_previous(route_key)`` gives the last alerted price for moving watches.
     """
     if deal.cabin not in cfg.cabins:
         return None
@@ -39,11 +45,22 @@ def evaluate(
     price = deal.price_usd
     usual = median if median is not None and samples >= cfg.relative.min_samples else None
 
-    watch = match_watch(deal, cfg.watchlist)
+    watch = match_watch(deal, cfg.watchlist, watch_previous)
     if watch:
         # Watchlist hits rank above every ordinary deal (score > 1).
-        discount = 1 - price / watch.max_price_usd
-        return ScoredDeal(deal, 1 + discount, [f"watchlist target ${watch.max_price_usd:,.0f}"], usual, discount)
+        if watch.lower_than_previous:
+            last = watch_previous(deal.route_key) if watch_previous else None
+            if last is None:
+                reason = f"watchlist: first price seen for this route (${price:,.0f}); alerts again whenever it gets lower"
+                reference = watch.max_price_usd or price
+            else:
+                reason = f"watchlist: ${last - price:,.0f} lower than the previous price ${last:,.0f}"
+                reference = last
+            key = deal.route_key
+        else:
+            reason, reference, key = f"watchlist target ${watch.max_price_usd:,.0f}", watch.max_price_usd, None
+        discount = max(1 - price / reference, 0.0)
+        return ScoredDeal(deal, 1 + discount, [reason], usual, discount, watch_key=key)
 
     if not passes_destination(deal.destination, cfg.destinations):
         return None

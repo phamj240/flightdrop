@@ -253,3 +253,99 @@ def test_no_lookup_when_the_feature_is_off_or_unconfigured(cfg, store):
     run_scan([make_deal(destination="LAS", price_usd=33.0, airline="F9")], cfg, s2, NOW, post=p)    # no alternative fn
     assert len(p.sent) == 1 and not p.sent[0].alternative_checked
     s2.close()
+
+
+# --- moving watch target end to end ----------------------------------------------------------
+
+from flightdrop.config import WatchItem  # noqa: E402
+
+
+def moving_cfg(cfg, ceiling=None):
+    return replace(cfg, watchlist=(WatchItem(("MEM",), "MSP", "economy", ceiling, True),))
+
+
+def mem_fare(price, **kw):
+    return make_deal(origin="MEM", destination="MSP", price_usd=price, **kw)
+
+
+def test_a_moving_watch_ratchets_down_scan_after_scan(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+    t = NOW
+    for price, expect_alert in [(320, True), (320, False), (330, False), (310, True), (312, False), (309, True), (309, False), (250, True)]:
+        before = len(post.sent)
+        run_scan([mem_fare(float(price))], wc, store, t, post=post)
+        assert (len(post.sent) - before == 1) is expect_alert, price
+        t += timedelta(hours=3)
+    assert [s.deal.price_usd for s in post.sent] == [320, 310, 309, 250]
+    assert store.watch_price("MEM-MSP-economy") == 250.0
+
+
+def test_the_first_alert_is_labelled_as_the_baseline_and_later_ones_show_the_drop(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+    run_scan([mem_fare(320.0)], wc, store, NOW, post=post)
+    run_scan([mem_fare(300.0, depart_date=NOW.date() + timedelta(days=40), return_date=NOW.date() + timedelta(days=45))],
+             wc, store, NOW + timedelta(hours=3), post=post)
+    assert post.sent[0].reasons[0].startswith("watchlist: first price seen")
+    assert post.sent[1].reasons == ["watchlist: $20 lower than the previous price $320"]
+
+
+def test_a_small_drop_on_the_same_dates_still_alerts_because_the_ten_percent_rule_does_not_apply(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+    run_scan([mem_fare(320.0)], wc, store, NOW, post=post)
+    run_scan([mem_fare(315.0)], wc, store, NOW + timedelta(hours=3), post=post)        # same route + dates, only 1.6% lower
+    assert [s.deal.price_usd for s in post.sent] == [320.0, 315.0]
+
+
+def test_several_fares_for_the_same_watch_in_one_scan_alert_once_at_the_cheapest(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+    options = [mem_fare(330.0, stops=0), mem_fare(300.0, stops=1), mem_fare(310.0, stops=2)]
+    options[1] = mem_fare(300.0, stops=1, depart_date=NOW.date() + timedelta(days=50), return_date=NOW.date() + timedelta(days=55))
+    options[2] = mem_fare(310.0, stops=2, depart_date=NOW.date() + timedelta(days=60), return_date=NOW.date() + timedelta(days=65))
+    run_scan(options, wc, store, NOW, post=post)
+    assert [s.deal.price_usd for s in post.sent] == [300.0]
+    assert store.watch_price("MEM-MSP-economy") == 300.0
+
+
+def test_a_failed_post_does_not_move_the_target(cfg, store):
+    wc = moving_cfg(cfg)
+    run_scan([mem_fare(320.0)], wc, store, NOW, post=Poster(fail_on={"MSP"}))
+    assert store.watch_price("MEM-MSP-economy") is None
+    post = Poster()
+    run_scan([mem_fare(320.0)], wc, store, NOW + timedelta(hours=3), post=post)         # retried as the baseline
+    assert len(post.sent) == 1 and store.watch_price("MEM-MSP-economy") == 320.0
+
+
+def test_a_held_deal_does_not_move_the_target_and_goes_out_later(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+    run_scan([mem_fare(320.0)], wc, store, NOW, post=post, alerts_allowed=False)
+    assert post.sent == [] and store.watch_price("MEM-MSP-economy") is None
+    run_scan([mem_fare(320.0)], wc, store, NOW + timedelta(hours=6), post=post)
+    assert len(post.sent) == 1
+
+
+def test_the_target_resets_after_90_quiet_days(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+
+    def fare_on(day_offset, price):      # trip dates relative to the scan, so the trip window never interferes
+        start = (NOW + timedelta(days=day_offset)).date() + timedelta(days=20)
+        return mem_fare(price, depart_date=start, return_date=start + timedelta(days=5))
+
+    run_scan([fare_on(0, 200.0)], wc, store, NOW, post=post)                             # a one-off low fare sets the bar
+    run_scan([fare_on(30, 300.0)], wc, store, NOW + timedelta(days=30), post=post)
+    assert len(post.sent) == 1                                                           # 300 is not lower than 200
+    run_scan([fare_on(95, 300.0)], wc, store, NOW + timedelta(days=95), post=post)       # memory expired: new baseline
+    assert [s.deal.price_usd for s in post.sent] == [200.0, 300.0]
+
+
+def test_a_moving_watch_uses_the_cached_price_even_when_a_live_check_says_otherwise(cfg, store):
+    wc, post = moving_cfg(cfg), Poster()
+    run_scan([mem_fare(300.0)], wc, store, NOW, post=post, verify=lambda d: 310.0)       # live price a bit higher
+    assert post.sent[0].live_price_usd == 310.0 and store.watch_price("MEM-MSP-economy") == 300.0
+
+
+def test_the_users_real_config_drives_the_same_ratchet(shipped_cfg, store):
+    post = Poster()
+    run_scan([mem_fare(280.0)], shipped_cfg, store, NOW, post=post)                     # domestic MSP is outside the include list
+    run_scan([mem_fare(280.0)], shipped_cfg, store, NOW + timedelta(hours=3), post=post)
+    run_scan([mem_fare(270.0)], shipped_cfg, store, NOW + timedelta(hours=6), post=post)
+    assert [s.deal.price_usd for s in post.sent] == [280.0, 270.0]

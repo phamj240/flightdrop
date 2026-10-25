@@ -146,3 +146,26 @@ def test_watch_requires_matching_route_origin_and_cabin():
 
 def test_watch_ignores_deals_without_price():
     assert match_watch(make_deal(destination="NRT", price_usd=None), W) is None
+
+
+# --- moving watch target ---------------------------------------------------------------------
+
+def test_match_watch_moving_target_uses_the_previous_price():
+    moving = (WatchItem(origins=("MEM",), destination="MSP", cabin="economy", lower_than_previous=True),)
+    deal = lambda p: make_deal(origin="MEM", destination="MSP", price_usd=p)           # noqa: E731
+    assert match_watch(deal(500.0), moving) is moving[0]                                # no history: first price
+    assert match_watch(deal(500.0), moving, lambda k: None) is moving[0]
+    assert match_watch(deal(299.0), moving, lambda k: 300.0) is moving[0]
+    assert match_watch(deal(300.0), moving, lambda k: 300.0) is None
+    assert match_watch(deal(299.5), moving, lambda k: 300.0) is None                    # must be a dollar lower
+    asked = []
+    match_watch(deal(299.0), moving, lambda k: asked.append(k) or 300.0)
+    assert asked == ["MEM-MSP-economy"]                                                  # state is per origin-destination-cabin
+
+
+def test_match_watch_moving_target_with_a_ceiling():
+    moving = (WatchItem(origins=("MEM",), destination="MSP", cabin="economy", max_price_usd=400.0, lower_than_previous=True),)
+    deal = lambda p: make_deal(origin="MEM", destination="MSP", price_usd=p)           # noqa: E731
+    assert match_watch(deal(401.0), moving) is None
+    assert match_watch(deal(400.0), moving) is moving[0]
+    assert match_watch(deal(390.0), moving, lambda k: 390.0) is None

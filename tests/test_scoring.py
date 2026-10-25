@@ -323,16 +323,62 @@ def mem_msp(price, **kw):
 
 def test_the_users_memphis_to_minneapolis_watch_is_configured(shipped_cfg):
     (w,) = shipped_cfg.watchlist
-    assert (w.origins, w.destination, w.cabin, w.max_price_usd) == (("MEM",), "MSP", "economy", 250.0)
+    assert (w.origins, w.destination, w.cabin) == (("MEM",), "MSP", "economy")
+    assert w.lower_than_previous is True and w.max_price_usd is None       # moving target, no ceiling
 
 
-def test_memphis_to_minneapolis_alerts_at_or_under_the_target_despite_the_destination_filter(shipped_cfg):
+def test_memphis_to_minneapolis_alerts_on_a_first_fare_despite_the_destination_filter(shipped_cfg):
     # Minneapolis is US domestic, which the user's include list would otherwise reject.
     assert ev(make_deal(origin="DFW", destination="MSP", price_usd=100.0), shipped_cfg) is None
     s = ev(mem_msp(240.0), shipped_cfg)
-    assert s is not None and s.reasons == ["watchlist target $250"] and s.score > 1
-    assert ev(mem_msp(250.0), shipped_cfg) is not None                # target is inclusive
-    assert ev(mem_msp(251.0), shipped_cfg) is None
+    assert s is not None and s.watch_key == "MEM-MSP-economy"
+    assert s.score >= 1.0                       # no drop yet, but still ranks above every ordinary deal (< 1)
+    assert s.reasons == ["watchlist: first price seen for this route ($240); alerts again whenever it gets lower"]
+
+
+# --- moving watch target: "just lower than the previous" -------------------------------------
+
+def moving(cfg, ceiling=None):
+    return replace(cfg, watchlist=(WatchItem(("MEM",), "MSP", "economy", ceiling, True),))
+
+
+def with_previous(cfg, price, previous):
+    return evaluate(mem_msp(price), cfg, None, 0, TODAY, watch_previous=lambda key: previous)
+
+
+def test_a_moving_watch_alerts_on_a_fare_at_least_a_dollar_below_the_previous_one(cfg):
+    wc = moving(cfg)
+    s = with_previous(wc, 299.0, 300.0)
+    assert s is not None and s.reasons == ["watchlist: $1 lower than the previous price $300"]
+    assert s.watch_key == "MEM-MSP-economy" and s.score > 1
+    assert with_previous(wc, 250.0, 300.0).reasons == ["watchlist: $50 lower than the previous price $300"]
+
+
+def test_a_moving_watch_ignores_equal_higher_and_sub_dollar_changes(cfg):
+    wc = moving(cfg)
+    for price in (300.0, 300.5, 299.5, 301.0, 450.0):
+        assert with_previous(wc, price, 300.0) is None, price
+
+
+def test_a_moving_watch_with_no_previous_treats_the_first_fare_as_the_baseline(cfg):
+    wc = moving(cfg)
+    assert evaluate(mem_msp(900.0), wc, None, 0, TODAY) is not None                         # no history callable
+    assert with_previous(wc, 900.0, None).reasons[0].startswith("watchlist: first price seen")
+
+
+def test_a_ceiling_stops_a_moving_watch_from_alerting_on_a_high_first_fare(cfg):
+    capped = moving(cfg, ceiling=400.0)
+    assert with_previous(capped, 450.0, None) is None
+    assert with_previous(capped, 390.0, None) is not None
+    assert with_previous(capped, 390.0, 380.0) is None                  # under the ceiling but not lower than the previous
+    assert with_previous(capped, 370.0, 380.0) is not None
+
+
+def test_a_fixed_watch_is_unaffected_and_does_not_track_state(cfg):
+    fixed = replace(cfg, watchlist=(WatchItem(("MEM",), "MSP", "economy", 250.0),))
+    s = evaluate(mem_msp(240.0), fixed, None, 0, TODAY, watch_previous=lambda key: 100.0)
+    assert s.reasons == ["watchlist target $250"] and s.watch_key is None
+    assert evaluate(mem_msp(260.0), fixed, None, 0, TODAY) is None
 
 
 def test_the_watch_is_one_direction_economy_and_respects_the_trip_window(shipped_cfg):

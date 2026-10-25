@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Callable
 
 from .airports import lookup, region_for
 from .config import AirlineFilter, DestinationFilter, TripWindow, WatchItem
@@ -57,16 +58,31 @@ def passes_destination(destination: str | None, dest: DestinationFilter) -> bool
     return region_for(destination) in dest.include_regions or country in dest.include_countries
 
 
-def match_watch(deal: Deal, watchlist: tuple[WatchItem, ...]) -> WatchItem | None:
-    """First watchlist entry whose route, cabin and target price this deal meets."""
+MIN_DROP_USD = 1.0      # "just lower than the previous" means at least a dollar lower
+
+
+def match_watch(
+    deal: Deal,
+    watchlist: tuple[WatchItem, ...],
+    previous: Callable[[str], float | None] | None = None,
+) -> WatchItem | None:
+    """First watchlist entry this deal satisfies.
+
+    A fixed entry needs ``price <= max_price_usd``. A moving entry (``lower_than_previous``)
+    needs no earlier alert for the route (the first price seen), or a price at least
+    ``MIN_DROP_USD`` below the last alerted one; an optional ``max_price_usd`` is a ceiling.
+    ``previous(route_key)`` returns the last alerted price for a route, or None.
+    """
     if deal.price_usd is None:
         return None
     for w in watchlist:
-        if (
-            deal.destination == w.destination
-            and deal.origin in w.origins
-            and deal.cabin == w.cabin
-            and deal.price_usd <= w.max_price_usd
-        ):
-            return w
+        if not (deal.destination == w.destination and deal.origin in w.origins and deal.cabin == w.cabin):
+            continue
+        if w.max_price_usd is not None and deal.price_usd > w.max_price_usd:
+            continue
+        if w.lower_than_previous:
+            last = previous(deal.route_key) if previous else None
+            if last is not None and deal.price_usd > last - MIN_DROP_USD:
+                continue
+        return w
     return None
