@@ -34,6 +34,14 @@ class RunResult:
     failed_posts: int = 0
     verified: int = 0
     dropped_after_verify: int = 0
+    held: int = 0          # new deals waiting for the next scan inside the alert hours
+
+
+def in_alert_hours(now: datetime, cfg: Config) -> bool:
+    """True if alerts may be posted at ``now`` (always true when no window is configured)."""
+    if cfg.alert_hours is None:
+        return True
+    return cfg.alert_hours.contains(now.astimezone(ZoneInfo(cfg.timezone)).time())
 
 
 def start_of_today_utc(now: datetime, tz_name: str) -> datetime:
@@ -102,8 +110,14 @@ def run_scan(
     post: PostFn,
     verify: VerifyFn | None = None,
     alternative: AlternativeFn | None = None,
+    alerts_allowed: bool = True,
 ) -> RunResult:
-    """Process one batch of candidate deals. ``post`` raises NotifyError on failure."""
+    """Process one batch of candidate deals. ``post`` raises NotifyError on failure.
+
+    With ``alerts_allowed=False`` (outside the alert hours) everything runs except posting:
+    prices are still recorded and deals scored, but nothing is verified, looked up, posted
+    or logged as sent, so the held deals go out at the first scan inside the window.
+    """
     result = RunResult(candidates=len(deals))
 
     scored = _score_all(deals, cfg, store, now)
@@ -122,6 +136,10 @@ def run_scan(
 
     already = store.alerts_since(start_of_today_utc(now, cfg.timezone))
     result.slots = max(cfg.max_alerts_per_day - already, 0)
+
+    if not alerts_allowed:
+        result.held = len(fresh)
+        fresh = []
 
     for s in rank_and_cap(fresh, len(fresh)):   # best first
         if len(result.alerts) >= result.slots:

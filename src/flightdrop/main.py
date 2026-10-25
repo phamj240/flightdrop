@@ -81,12 +81,18 @@ def describe(s: ScoredDeal) -> str:
     return text
 
 
-def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    env: Mapping[str, str] | None = None,
+    now: datetime | None = None,
+) -> int:
     ap = argparse.ArgumentParser(prog="flightdrop", description=__doc__.split("\n")[0])
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--db", default="state/flightdrop.sqlite", help="SQLite file holding price history")
     ap.add_argument("--dry-run", action="store_true",
                     help="fetch and score for real, but print instead of posting; saved state is not changed")
+    ap.add_argument("--ignore-alert-hours", action="store_true",
+                    help="post even outside the configured alert hours (used for manual runs)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
     env = os.environ if env is None else env
@@ -113,7 +119,7 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         log.error("DISCORD_WEBHOOK_URL is not set (use --dry-run to try without Discord)")
         return 1
 
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)     # injectable so tests can pick the time of day
     deals, attempted, failed = collect(cfg, env, now, session)
     if attempted == 0:
         log.error("nothing to scan: set TRAVELPAYOUTS_TOKEN or enable rss in the config")
@@ -122,6 +128,16 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
         log.error("every data source failed")
         return 1
     log.info("%d candidate deal(s) from %d source(s)", len(deals), attempted - failed)
+
+    # A dry run always ignores the window so it shows results at any hour.
+    alerts_allowed = args.dry_run or args.ignore_alert_hours or pipeline.in_alert_hours(now, cfg)
+    if not alerts_allowed:
+        window = cfg.alert_hours
+        log.info(
+            "outside alert hours (%s-%s %s): scanning and recording prices, but holding new deals "
+            "until the next scan inside the window",
+            window.start.strftime("%H:%M"), window.end.strftime("%H:%M"), cfg.timezone,
+        )
 
     key = env.get("SERPAPI_KEY")
     verify = None
@@ -152,7 +168,10 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
             shutil.copyfile(args.db, db_path)
     store = Store(db_path)
     try:
-        result = pipeline.run_scan(deals, cfg, store, now, post=post, verify=verify, alternative=alternative)
+        result = pipeline.run_scan(
+            deals, cfg, store, now, post=post, verify=verify, alternative=alternative,
+            alerts_allowed=alerts_allowed,
+        )
     finally:
         store.close()
         if scratch:
@@ -161,7 +180,8 @@ def main(argv: Sequence[str] | None = None, env: Mapping[str, str] | None = None
     log.info(
         "%d candidates, %d qualified, %d new, %d slot(s) left today -> %d alert(s)%s",
         result.candidates, result.qualified, result.new, result.slots, len(result.alerts),
-        f" ({result.failed_posts} failed to post)" if result.failed_posts else "",
+        (f" ({result.failed_posts} failed to post)" if result.failed_posts else "")
+        + (f" ({result.held} held for the alert hours)" if result.held else ""),
     )
     return 0
 

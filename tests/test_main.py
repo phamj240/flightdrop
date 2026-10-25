@@ -44,8 +44,8 @@ def run(tmp_path, monkeypatch):
     db = tmp_path / "state" / "db.sqlite"
     base_env = {"TRAVELPAYOUTS_TOKEN": TOKEN, "DISCORD_WEBHOOK_URL": HOOK}
 
-    def go(*args, env=None, config=CONFIG):
-        return cli.main(["--config", config, "--db", str(db), *args], env=base_env if env is None else env)
+    def go(*args, env=None, config=CONFIG, now=None):
+        return cli.main(["--config", config, "--db", str(db), *args], env=base_env if env is None else env, now=now)
 
     go.state, go.db = state, db
     return go
@@ -160,3 +160,42 @@ def test_no_next_best_lookup_for_other_airlines_or_without_a_token(run):
     run.state["deals"] = [frontier_las()]
     run("--dry-run", env={"DISCORD_WEBHOOK_URL": HOOK, "TRAVELPAYOUTS_TOKEN": ""})     # no token -> no lookup, no crash
     assert run.state["alt_calls"] == []
+
+
+# --- alert hours ---------------------------------------------------------------
+
+from datetime import datetime, timezone  # noqa: E402
+
+MIDDAY = datetime(2026, 11, 2, 18, 0, tzinfo=timezone.utc)      # 12:00 noon Central standard time
+NIGHT = datetime(2026, 11, 2, 10, 0, tzinfo=timezone.utc)       # 4:00 AM Central standard time
+
+
+@pytest.fixture
+def windowed(tmp_path):
+    path = tmp_path / "windowed.yaml"
+    path.write_text(BASELINE_CONFIG.read_text() + '\nalert_hours: {start: "08:00", end: "21:30"}\n')
+    return str(path)
+
+
+def test_a_scan_in_the_middle_of_the_night_holds_deals_until_morning(run, windowed, caplog):
+    caplog.set_level("INFO")
+    assert run(config=windowed, now=NIGHT) == 0
+    assert run.state["posted"] == []
+    assert "outside alert hours (08:00-21:30 America/Chicago)" in caplog.text and "1 held" in caplog.text
+    assert run(config=windowed, now=MIDDAY) == 0                       # the next scan inside the window sends it
+    assert len(run.state["posted"]) == 1
+
+
+def test_a_manual_run_ignores_the_alert_hours(run, windowed):
+    assert run("--ignore-alert-hours", config=windowed, now=NIGHT) == 0
+    assert len(run.state["posted"]) == 1
+
+
+def test_a_dry_run_shows_results_at_any_hour_and_still_changes_nothing(run, windowed, capsys):
+    assert run("--dry-run", config=windowed, now=NIGHT) == 0
+    assert "WOULD ALERT: MSP→LIS economy $400" in capsys.readouterr().out
+    assert run.state["posted"] == [] and not run.db.exists()
+
+
+def test_without_a_window_alerts_go_out_at_any_hour(run):
+    assert run(now=NIGHT) == 0 and len(run.state["posted"]) == 1

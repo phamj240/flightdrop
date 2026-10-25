@@ -4,8 +4,13 @@
 
 home_airports: [MSP, DFW]
 cabins: [economy, business]      # the fare data is economy-only; business deals appear only when a deal-feed post mentions one
-timezone: America/Chicago        # used for the "5 alerts per day" window
+timezone: America/Chicago        # used for the alert hours and the "5 alerts per day" count
 max_alerts_per_day: 5
+
+# Alerts are only posted inside this window (local time in `timezone`, adjusts for daylight saving).
+# Scans outside it still run and record prices, but hold deals until the next scan inside the window.
+# Quote the times. Remove this line to allow alerts at any hour.
+alert_hours: {start: "08:00", end: "21:30"}
 
 # --- Where you want to go ------------------------------------------------
 # Empty lists = anywhere. include_regions and include_countries are combined (either matches).
@@ -85,11 +90,13 @@ verify:
 
 # Human-curated deal feeds. Only posts departing from a keyword city are kept (title + link only).
 # These feeds rarely mention any one airport, so expect an occasional extra deal, not a stream.
-# Not used: Secret Flying (blocks automated requests), Fly4Free (Europe only).
+# TheFlightDeal posts about one Dallas deal a day around midday Central; it has no Minneapolis feed.
+# Not used: Secret Flying (blocks automated requests), Fly4Free (Europe only), r/flightdeals (its
+# reachable feed is a frozen ~3-year-old snapshot and the live feeds are blocked).
 rss:
   enabled: true
   max_age_hours: 48              # ignore older posts (fares expire fast)
   keywords: [MSP, Minneapolis, DFW, Dallas]
   feeds:
-    theflightdeal: https://www.theflightdeal.com/feed/
-    reddit_flightdeals: https://www.reddit.com/r/flightdeals/.rss
+    theflightdeal: https://www.theflightdeal.com/feed/                 # all cities, last ~day
+    theflightdeal_dallas: https://www.theflightdeal.com/category/dallas/feed/   # Dallas, last ~2 weeks

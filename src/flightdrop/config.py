@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -45,6 +47,19 @@ class DestinationFilter:
     include_countries: tuple[str, ...] = ()
     exclude_countries: tuple[str, ...] = ()
     exclude_airports: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class AlertHours:
+    """Daily window (local time in ``Config.timezone``) when alerts may be posted."""
+
+    start: time
+    end: time
+
+    def contains(self, t: time) -> bool:
+        if self.start <= self.end:
+            return self.start <= t <= self.end
+        return t >= self.start or t <= self.end        # window wraps past midnight
 
 
 @dataclass(frozen=True)
@@ -91,6 +106,7 @@ class Config:
     airlines: AirlineFilter = field(default_factory=AirlineFilter)
     # ISO-2 destination country -> {cabin: round-trip USD}. Overrides the region's price.
     thresholds_by_country: dict[str, dict[str, float]] = field(default_factory=dict)
+    alert_hours: AlertHours | None = None            # None = alert at any time
 
 
 def _require(d: dict[str, Any], key: str) -> Any:
@@ -105,6 +121,28 @@ def _codes(values: Any, length: int, what: str) -> tuple[str, ...]:
     if bad:
         raise ConfigError(f"{what} must be {length}-letter codes; got {bad}")
     return out
+
+
+def _clock(value: Any, what: str) -> time:
+    # Unquoted 21:30 is read by YAML as the number 1290 (base-60), so a string is required.
+    if not isinstance(value, str):
+        raise ConfigError(f'{what} must be a quoted 24-hour time like "08:00"; got {value!r}')
+    try:
+        hours, minutes = value.strip().split(":")
+        return time(int(hours), int(minutes))
+    except ValueError:
+        raise ConfigError(f'{what} must look like "08:00" (24-hour HH:MM); got {value!r}') from None
+
+
+def _parse_alert_hours(raw: Any) -> AlertHours | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or "start" not in raw or "end" not in raw:
+        raise ConfigError('alert_hours needs both start and end, e.g. {start: "08:00", end: "21:30"}')
+    window = AlertHours(_clock(raw["start"], "alert_hours.start"), _clock(raw["end"], "alert_hours.end"))
+    if window.start == window.end:
+        raise ConfigError("alert_hours.start and alert_hours.end must differ")
+    return window
 
 
 def _parse_country_thresholds(raw: Any) -> dict[str, dict[str, float]]:
@@ -261,7 +299,12 @@ def parse_config(raw: dict[str, Any]) -> Config:
         watchlist=_parse_watchlist(raw.get("watchlist") or [], airports, cabins),  # type: ignore[arg-type]
         airlines=_parse_airlines(raw.get("airlines") or {}),
         thresholds_by_country=_parse_country_thresholds(raw.get("thresholds_by_country")),
+        alert_hours=_parse_alert_hours(raw.get("alert_hours")),
     )
+    try:
+        ZoneInfo(cfg.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise ConfigError(f"timezone {cfg.timezone!r} is not a valid timezone name like America/Chicago") from None
     if cfg.max_alerts_per_day < 1:
         raise ConfigError("max_alerts_per_day must be >= 1")
     if not 0 < cfg.relative.max_ratio <= 1:

@@ -2,7 +2,11 @@ name: scan
 
 on:
   schedule:
-    - cron: "7 */3 * * *"      # every 3 hours (UTC); GitHub may delay scheduled runs a little
+    # Five scans a day, in UTC. In Central daylight time these are 9:15, 12:15, 15:15, 18:15 and
+    # 20:45 (one hour earlier in standard time). They land inside the alert hours either way, and
+    # the 15:15 one comes after TheFlightDeal's midday posting. GitHub may delay runs a few minutes.
+    - cron: "15 14,17,20,23 * * *"
+    - cron: "45 1 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -63,9 +67,12 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
           DRY_RUN: ${{ inputs.dry_run }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           flags=""
           if [ "$DRY_RUN" = "true" ]; then flags="--dry-run"; fi
+          # A run started by hand posts right away, even outside the alert hours.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then flags="$flags --ignore-alert-hours"; fi
           python -m flightdrop.main --db state/flightdrop.sqlite $flags
 
       - name: Save price history

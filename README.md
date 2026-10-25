@@ -21,12 +21,32 @@ On top of that you can restrict where you go, set trip lengths, and add a **watc
 target price that always alerts. At most 5 alerts go out per day, best first, and a deal is never posted twice
 unless its price drops by 10% or more.
 
+## When alerts are sent
+
+Alerts are only posted between **8:00 AM and 9:30 PM Central** (it follows daylight saving), so your phone isn't
+buzzing overnight. The bot scans five times a day: about **9:15 AM, 12:15 PM, 3:15 PM, 6:15 PM and 8:45 PM** Central.
+Anything found outside the window waits and is sent at the first scan after it opens. If you start a run by hand
+from the Actions tab, it posts right away regardless of the hour.
+
+Why these times, from the research and from measuring the data:
+
+- The cached fares are a median of about 3.6 days old and are refreshed around the clock by travelers' searches, so
+  scanning more often than a few times a day finds little that's new.
+- TheFlightDeal posts its daily Dallas deal around midday Central, so the 12:15 and 3:15 PM scans catch it.
+- Mistake fares (error fares) usually die within hours. This bot's cached data can't catch those; it is built for
+  good deals that last days. Catching error fares needs a faster, paid source.
+- Published advice about the "best day or time to book" is mostly folklore, so the timing is about your waking hours,
+  not about the fare.
+
+To change the window, edit `alert_hours` in `config.yaml` (quote the times: `"08:00"`). To change the scan times,
+edit the `cron` lines in `.github/workflows/scan.yml` (they are in UTC).
+
 ## Where the data comes from (all free)
 
 | Source | What it gives | Catch |
 |---|---|---|
 | Aviasales / Travelpayouts Data API | Cheapest cached economy fares from your airports to ~100-200 destinations | Prices are cached (up to ~7 days old), not live; no business class |
-| TheFlightDeal, r/flightdeals RSS | Human-found deals and error fares | Rarely mention any one airport |
+| TheFlightDeal RSS (main + Dallas feeds) | Human-found deals; about one Dallas deal a day, posted around midday Central | Rarely mentions any one airport; no Minneapolis feed |
 | SerpApi Google Flights (optional) | Re-checks a fare's live price before posting | 250 free searches/month, so only a few per day |
 
 Alerts say **live-verified** or **cached price - verify before booking**, so you always know which you got.
@@ -44,7 +64,7 @@ You need a GitHub account, a Discord server, and about 15 minutes.
 4. **Repo secrets.** In this repo: Settings > Secrets and variables > Actions > New repository secret. Add
    `TRAVELPAYOUTS_TOKEN`, `DISCORD_WEBHOOK_URL`, and optionally `SERPAPI_KEY`.
 5. **Run it.** Actions tab > *scan* > Run workflow. Tick *dry_run* first to see what it would post in the log.
-   After that it runs by itself every 3 hours.
+   After that it runs by itself five times a day (see "When alerts are sent" below).
 
 Keep the repo **public**: public repos get unlimited free Actions minutes. Your tokens live only in GitHub secrets,
 never in the code.
