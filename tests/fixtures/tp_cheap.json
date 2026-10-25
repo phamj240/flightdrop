@@ -1,0 +1,27 @@
+{
+  "success": true,
+  "currency": "usd",
+  "data": {
+    "LAX": {"1": {"airline": "F9", "departure_at": "2026-11-13T14:33:00-06:00", "return_at": "2026-11-16T14:31:00-08:00",
+                  "expires_at": "2026-11-03T00:00:00Z", "price": 228, "flight_number": 1149,
+                  "duration": 2823, "duration_to": 290, "duration_back": 270}},
+    "CUN": {"0": {"airline": "SY", "departure_at": "2027-01-01T06:00:00-06:00", "return_at": "2027-01-07T12:15:00-05:00",
+                  "expires_at": "2026-11-03T00:00:00Z", "price": 438, "flight_number": 569}},
+    "NYC": {"0": {"airline": "DL", "departure_at": "2026-12-05T08:00:00-06:00", "return_at": "2026-12-08T20:00:00-05:00",
+                  "expires_at": "2026-11-03T00:00:00Z", "price": 187, "flight_number": 11}},
+    "NRT": {"0": {"airline": "DL", "departure_at": "2026-12-12T00:00:00Z", "return_at": "2026-12-26T00:00:00Z",
+                  "expires_at": "2026-11-03T00:00:00Z", "price": 845.5, "flight_number": 275},
+            "2": {"airline": "UA", "departure_at": "2026-12-14T00:00:00Z", "return_at": "2026-12-28T00:00:00Z",
+                  "expires_at": "2026-11-03T00:00:00Z", "price": 799, "flight_number": 881}},
+    "OLD": {"0": {"airline": "XX", "departure_at": "2026-12-03T00:00:00Z", "return_at": "2026-12-10T00:00:00Z",
+                  "expires_at": "2026-10-30T00:00:00Z", "price": 100}},
+    "OWY": {"0": {"airline": "XX", "departure_at": "2026-12-03T00:00:00Z", "return_at": null,
+                  "expires_at": "2026-11-03T00:00:00Z", "price": 90}},
+    "BAD": {"0": {"airline": "XX", "departure_at": "2026-12-03T00:00:00Z", "return_at": "2026-12-10T00:00:00Z",
+                  "expires_at": "2026-11-03T00:00:00Z", "price": null}},
+    "NOD": {"0": {"airline": "XX", "departure_at": null, "return_at": "2026-12-10T00:00:00Z",
+                  "expires_at": "2026-11-03T00:00:00Z", "price": 120}},
+    "JUNK": "not-a-dict",
+    "ROWJ": {"0": "not-a-row"}
+  }
+}

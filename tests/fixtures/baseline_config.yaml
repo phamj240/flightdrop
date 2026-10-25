@@ -1,0 +1,86 @@
+# Neutral baseline config used by the tests. It is deliberately independent of the real
+# config.yaml so editing your own destinations/prices never breaks the test suite.
+# (Anywhere in the world, no per-country prices, conflict zones excluded.)
+
+# flightdrop settings. Secrets (API tokens, webhook URL) are NOT here;
+# they come from environment variables / GitHub Actions secrets.
+# To change anything: edit this file (or ask Claude to). Invalid edits fail with a clear error.
+
+home_airports: [MSP, DFW]
+cabins: [economy, business]      # the fare data is economy-only; business deals appear only when a deal-feed post mentions one
+timezone: America/Chicago        # used for the "5 alerts per day" window
+max_alerts_per_day: 5
+
+# --- Where you want to go ------------------------------------------------
+# Empty lists = anywhere. include_regions and include_countries are combined (either matches).
+# Regions: domestic, nearby_intl, europe, asia_oceania, other_intl
+destinations:
+  include_regions: []
+  include_countries: []
+  exclude_countries: [IQ, AF, SY, YE, LY, SO, SD, SS, RU, BY]   # conflict zones / no-go countries; edit freely
+  exclude_airports: []           # e.g. [JFK]
+
+# --- Watchlist: always alert when the target price is met -----------------
+# Ignores the destination filters and the price rules above/below (trip window still applies).
+# 'from' is optional and defaults to all home_airports.
+watchlist: []
+#  - {to: NRT, cabin: economy, max_price_usd: 800}
+#  - {from: MSP, to: LIS, cabin: business, max_price_usd: 1500}
+
+# --- Airlines -------------------------------------------------------------
+# 2-character airline codes (shown in alerts as e.g. "Frontier (F9)"). Empty = any airline.
+# 'exclude' always wins. Also applies to watchlist routes. Not applied to deal-feed posts.
+# Common codes: F9 Frontier, NK Spirit, SY Sun Country, G4 Allegiant, WN Southwest, DL Delta,
+# UA United, AA American, AS Alaska, B6 JetBlue.
+airlines:
+  include: []                    # e.g. [DL, UA, AA] to only see those carriers
+  exclude: []                    # e.g. [F9, NK] to never see Frontier or Spirit
+  # Not a filter: when an alert is for one of these carriers, it also shows the cheapest fare
+  # on ANY OTHER airline for the same route, so you can see a realistic alternative.
+  alternatives_for: [F9, NK]
+
+# --- Trip window ----------------------------------------------------------
+trip:
+  min_days: 2                    # round-trip length
+  max_days: 30                   # null = no limit
+  depart_in_days: {min: 3, max: null}   # how far ahead the departure may be (days from today)
+  depart_months: []              # e.g. [3, 4, 10] to only depart in those months
+
+# --- What counts as a deal ------------------------------------------------
+# "Cheap vs. usual": alert if price <= max_ratio * median of the last window_days.
+# Needs min_samples past observations of the same route + cabin to apply.
+relative:
+  window_days: 60
+  min_samples: 5
+  max_ratio: 0.70
+
+# "Fixed price": alert if round-trip price (USD) <= threshold for the destination region.
+# Starting guesses; tune after seeing real data.
+thresholds_usd:
+  domestic:     {economy: 150, business: 600}
+  nearby_intl:  {economy: 300, business: 900}    # Canada, Mexico, Caribbean, Central America
+  europe:       {economy: 550, business: 1600}
+  asia_oceania: {economy: 750, business: 2200}
+  other_intl:   {economy: 650, business: 2000}   # South America, Africa, Middle East
+# (the business numbers are currently unused: there is no business fare data to compare against)
+
+# Re-alert an already-posted deal only if the price dropped by at least this fraction.
+realert_min_drop: 0.10
+
+# Optional live-price confirmation via SerpApi (free plan: 250 searches/month).
+verify:
+  enabled: true
+  daily_budget: 6
+  monthly_budget: 240
+  max_live_over_cached: 1.15     # drop the deal if the live price is >15% above the cached one
+
+# Human-curated deal feeds. Only posts departing from a keyword city are kept (title + link only).
+# These feeds rarely mention any one airport, so expect an occasional extra deal, not a stream.
+# Not used: Secret Flying (blocks automated requests), Fly4Free (Europe only).
+rss:
+  enabled: true
+  max_age_hours: 48              # ignore older posts (fares expire fast)
+  keywords: [MSP, Minneapolis, DFW, Dallas]
+  feeds:
+    theflightdeal: https://www.theflightdeal.com/feed/
+    reddit_flightdeals: https://www.reddit.com/r/flightdeals/.rss

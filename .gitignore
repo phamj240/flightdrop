@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.sqlite
+.env
+state/
+
+# Design docs (kept local, not published)
+docs/HLD.md
+docs/LLD.md
+*.egg-info/
+build/
+dist/

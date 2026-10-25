@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+  <title>Deals</title><link>https://example.com</link><description>test feed</description>
+  <item><title>Qatar Airways: Dallas &#8211; Tashkent, Uzbekistan. $903. Roundtrip, including all Taxes</title>
+    <link>https://example.com/deal/1</link><pubDate>Sat, 31 Oct 2026 12:00:00 +0000</pubDate></item>
+  <item><title>Delta: Minneapolis &#8211; Lisbon, Portugal. $421 (Basic Economy) / $561 (Regular Economy). Roundtrip</title>
+    <link>https://example.com/deal/2</link><pubDate>Sun, 01 Nov 2026 09:00:00 +0000</pubDate></item>
+  <item><title>Air Canada: Los Angeles &#8211; Dallas, Texas. $212. Roundtrip, including all Taxes</title>
+    <link>https://example.com/deal/3</link><pubDate>Sun, 01 Nov 2026 09:00:00 +0000</pubDate></item>
+  <item><title>Business Class Deal: Dallas to Paris $2,450 Round Trip</title>
+    <link>https://example.com/deal/4</link><pubDate>Sun, 01 Nov 2026 10:00:00 +0000</pubDate></item>
+  <item><title>United: Dallas &#8211; Madrid, Spain. $500. Roundtrip, including all Taxes</title>
+    <link>https://example.com/deal/5</link><pubDate>Mon, 26 Oct 2026 10:00:00 +0000</pubDate></item>
+  <item><title>[EXPIRED] Dallas to Cancun $150 Round Trip</title>
+    <link>https://example.com/deal/6</link><pubDate>Sun, 01 Nov 2026 10:00:00 +0000</pubDate></item>
+  <item><title>First Class Deal: Dallas to Tokyo $4,000 Round Trip</title>
+    <link>https://example.com/deal/7</link><pubDate>Sun, 01 Nov 2026 10:00:00 +0000</pubDate></item>
+  <item><title>[MSP] Minneapolis to Hong Kong 1720&#8364; Round Trip</title>
+    <link>https://example.com/deal/8</link><pubDate>Sun, 01 Nov 2026 11:00:00 +0000</pubDate></item>
+  <item><title>Brussels to Hong Kong $1,720 Round Trip</title>
+    <link>https://example.com/deal/9</link><pubDate>Sun, 01 Nov 2026 11:00:00 +0000</pubDate></item>
+  <item><title></title><link>https://example.com/deal/10</link><pubDate>Sun, 01 Nov 2026 11:00:00 +0000</pubDate></item>
+</channel>
+</rss>

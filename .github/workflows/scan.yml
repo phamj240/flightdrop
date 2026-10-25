@@ -1,0 +1,95 @@
+name: scan
+
+on:
+  schedule:
+    - cron: "7 */3 * * *"      # every 3 hours (UTC); GitHub may delay scheduled runs a little
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print deals in the log instead of posting to Discord (saves nothing)"
+        type: boolean
+        default: false
+
+# Only schedule + manual triggers: pull requests from forks can never reach the secrets below.
+permissions:
+  contents: write              # push the price-history branch
+  actions: write               # keep this schedule enabled (see the last step)
+
+concurrency:
+  group: scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # Actions are pinned to commit hashes (not moving tags) so a compromised tag can't run here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false   # don't leave the repo token on disk for later steps
+
+      - name: Restore price history
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p state
+          remote="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$remote" data >/dev/null 2>&1; then
+            git fetch -q --depth=1 "$remote" data
+            git show FETCH_HEAD:flightdrop.sqlite > state/flightdrop.sqlite
+            echo "Restored price history ($(wc -c < state/flightdrop.sqlite) bytes)"
+          else
+            echo "No saved history yet; starting fresh"
+          fi
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Install dependencies (hash-locked)
+        # Only the exact packages in requirements.lock can be installed, so a newly
+        # published malicious release can't run in a job that holds secrets.
+        run: |
+          pip install --require-hashes -r requirements.lock
+          pip install --no-deps .
+
+      - name: Scan for deals
+        env:
+          TRAVELPAYOUTS_TOKEN: ${{ secrets.TRAVELPAYOUTS_TOKEN }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          flags=""
+          if [ "$DRY_RUN" = "true" ]; then flags="--dry-run"; fi
+          python -m flightdrop.main --db state/flightdrop.sqlite $flags
+
+      - name: Save price history
+        if: ${{ success() && inputs.dry_run != true }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          out="$(mktemp -d)"
+          cp state/flightdrop.sqlite "$out/"
+          cd "$out"
+          git init -q -b data
+          git config user.name "flightdrop[bot]"
+          git config user.email "flightdrop-bot@users.noreply.github.com"
+          git add flightdrop.sqlite
+          git commit -q -m "price history $(date -u +%FT%TZ)"
+          git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # One commit, overwritten every run, so the repo never grows.
+          git push -q --force origin data
+
+      - name: Keep the schedule enabled
+        # GitHub pauses scheduled workflows in repos with no activity for 60 days.
+        # Re-enabling resets that timer. Best effort: failures here never fail the run.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api -X PUT "repos/${GITHUB_REPOSITORY}/actions/workflows/scan.yml/enable"

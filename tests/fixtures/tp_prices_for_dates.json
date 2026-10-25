@@ -1,0 +1,30 @@
+{
+  "success": true,
+  "currency": "usd",
+  "data": [
+    {"origin": "DFW", "destination": "LAS", "origin_airport": "DFW", "destination_airport": "LAS", "airline": "F9", "flight_number": "1647",
+     "price": 33, "departure_at": "2027-01-05T06:00:00-06:00", "return_at": "2027-01-11T20:00:00-08:00", "transfers": 0, "return_transfers": 0,
+     "duration": 300, "duration_to": 150, "duration_back": 150, "gate": "Mytrip.com", "link": "/search/DFW0501LAS11011?t=XXXX"},
+    {"origin": "DFW", "destination": "LAS", "airline": "F9", "price": 52, "departure_at": "2026-11-10T06:00:00-06:00",
+     "return_at": "2026-11-10T20:00:00-08:00", "transfers": 0, "link": "/search/x"},
+    {"origin": "DFW", "destination": "LAS", "airline": "WN", "price": 64, "departure_at": "2026-11-14T08:00:00-06:00",
+     "return_at": "2026-11-17T20:00:00-08:00", "transfers": 0, "link": "/search/x"},
+    {"origin": "DFW", "destination": "LAS", "airline": "WN", "price": 40, "departure_at": "2026-11-02T08:00:00-06:00",
+     "return_at": "2026-11-05T20:00:00-08:00", "transfers": 0, "link": "/search/x"},
+    {"origin": "DFW", "destination": "LAS", "airline": "WN", "price": 45, "departure_at": "2026-12-01T08:00:00-06:00",
+     "return_at": "2027-01-20T20:00:00-08:00", "transfers": 0, "link": "/search/x"},
+    {"origin": "DFW", "destination": "LAS", "airline": "AA", "price": 140, "departure_at": "2026-12-08T08:00:00-06:00",
+     "return_at": "2026-12-12T20:00:00-08:00", "transfers": 1, "link": "/search/x"},
+    {"origin": "DFW", "destination": "LAS", "airline": "NK", "price": 58, "departure_at": "2026-12-09T08:00:00-06:00",
+     "return_at": "2026-12-13T20:00:00-08:00", "transfers": 0, "link": "/search/x"},
+    {"origin": "DFW", "destination": "LAS", "airline": "AS", "price": 30, "departure_at": "2026-12-09T08:00:00-06:00",
+     "return_at": null, "transfers": 0, "link": "/search/x"},
+    {"origin": "DFW", "destination": "LAS", "airline": null, "price": 20, "departure_at": "2026-12-09T08:00:00-06:00",
+     "return_at": "2026-12-13T20:00:00-08:00", "transfers": 0},
+    {"origin": "MSP", "destination": "LAS", "airline": "DL", "price": 25, "departure_at": "2026-12-09T08:00:00-06:00",
+     "return_at": "2026-12-13T20:00:00-08:00", "transfers": 0},
+    {"origin": "DFW", "destination": "LAS", "airline": "UA", "price": null, "departure_at": "2026-12-09T08:00:00-06:00",
+     "return_at": "2026-12-13T20:00:00-08:00", "transfers": 0},
+    "junk"
+  ]
+}
