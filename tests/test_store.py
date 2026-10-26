@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 from helpers import NOW, make_deal
 
+from flightdrop.models import LiveQuote
 from flightdrop.store import Store
 
 
@@ -147,7 +148,7 @@ def test_watch_price_expires_after_90_days(store):
 def test_live_check_memory_matches_the_exact_fare_and_expires_after_a_day(store):
     assert store.recent_live_check("k", 400.0, NOW) is None
     store.save_live_check("k", 400.0, 430.0, "ok", NOW)
-    assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=23)) == ("ok", 430.0)
+    assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=23)) == ("ok", LiveQuote(price=430.0))
     assert store.recent_live_check("k", 401.0, NOW + timedelta(hours=1)) is None             # cached price changed: new fare
     assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=25)) is None            # older than a day
     assert store.recent_live_check("other", 400.0, NOW) is None
@@ -157,7 +158,7 @@ def test_live_check_memory_can_be_overwritten_and_holds_no_data_results(store):
     store.save_live_check("k", 400.0, None, "nodata", NOW)
     assert store.recent_live_check("k", 400.0, NOW) == ("nodata", None)
     store.save_live_check("k", 400.0, 412.0, "ok", NOW + timedelta(hours=1))
-    assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=2)) == ("ok", 412.0)
+    assert store.recent_live_check("k", 400.0, NOW + timedelta(hours=2)) == ("ok", LiveQuote(price=412.0))
     assert store.db.execute("SELECT COUNT(*) FROM live_checks").fetchone()[0] == 1
 
 
@@ -167,3 +168,50 @@ def test_old_live_checks_are_pruned(store):
     assert store.db.execute("SELECT COUNT(*) FROM live_checks").fetchone()[0] == 1
     store.prune(NOW + timedelta(days=4))
     assert store.db.execute("SELECT COUNT(*) FROM live_checks").fetchone()[0] == 0
+
+
+# --- what we learn about each route ----------------------------------------------------------------
+
+def test_route_baseline_starts_empty_and_stores_the_first_check(store):
+    assert store.route_baseline("MSP-ROM") is None
+    store.set_route_baseline("MSP-ROM", 740.0, 1.75, NOW)
+    assert store.route_baseline("MSP-ROM") == (740.0, 1.75)
+    assert store.route_baseline("MSP-TYO") is None
+
+
+def test_route_baseline_ratio_is_smoothed_and_usual_is_kept_when_a_check_has_none(store):
+    store.set_route_baseline("MSP-ROM", 740.0, 2.0, NOW)
+    store.set_route_baseline("MSP-ROM", 700.0, 1.0, NOW + timedelta(days=1))
+    assert store.route_baseline("MSP-ROM") == (700.0, 1.5)                    # newest usual; ratio averaged
+    store.set_route_baseline("MSP-ROM", None, 1.0, NOW + timedelta(days=2))
+    assert store.route_baseline("MSP-ROM") == (700.0, 1.25)                   # no insights: keep the old usual price
+
+
+def test_route_baselines_expire_after_60_days(store):
+    store.set_route_baseline("MSP-ROM", 740.0, 1.75, NOW)
+    store.prune(NOW + timedelta(days=59))
+    assert store.route_baseline("MSP-ROM") is not None
+    store.prune(NOW + timedelta(days=61))
+    assert store.route_baseline("MSP-ROM") is None
+
+
+def test_live_check_memory_keeps_googles_insights(store):
+    quote = LiveQuote(price=600.0, usual=750.0, level="low", typical_low=700.0, typical_high=800.0)
+    store.save_live_check("k", 580.0, quote, "ok", NOW)
+    outcome, got = store.recent_live_check("k", 580.0, NOW + timedelta(hours=1))
+    assert outcome == "ok" and (got.price, got.usual, got.level) == (600.0, 750.0, "low")
+
+
+def test_an_older_saved_database_gains_the_new_columns(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.sqlite"
+    old = sqlite3.connect(path)
+    old.executescript("""CREATE TABLE live_checks(deal_key TEXT PRIMARY KEY, cached_price REAL NOT NULL, live_price REAL,
+                         outcome TEXT NOT NULL, checked_at TEXT NOT NULL);
+                         INSERT INTO live_checks VALUES ('k', 400.0, 410.0, 'ok', '2026-11-01T17:00:00Z');""")
+    old.commit(); old.close()
+    s = Store(path)                                          # opening it migrates it
+    assert s.recent_live_check("k", 400.0, NOW) == ("ok", LiveQuote(price=410.0))
+    s.save_live_check("k2", 1.0, LiveQuote(price=2.0, usual=3.0, level="low"), "ok", NOW)
+    assert s.recent_live_check("k2", 1.0, NOW)[1].usual == 3.0
+    s.close()

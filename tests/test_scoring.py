@@ -64,7 +64,18 @@ def test_country_bars_work_for_metro_codes(cfg):
     assert ev(make_deal(destination="TYO", price_usd=790.0), japan).reasons == ["under $800 Japan economy target"]
 
 
-# --- the user's real destinations (config.yaml) ---------------------------------
+# --- the user's destinations with their OLD fixed price bars (still supported as an optional rule) ----
+
+LEGACY_BARS = {"GT": 500.0, "CH": 750.0, "IT": 650.0, "ID": 1000.0, "JP": 750.0, "VN": 900.0, "KG": 1100.0, "KZ": 1100.0}
+
+
+@pytest.fixture
+def legacy_cfg(shipped_cfg, cfg):
+    """The user's real destination filter plus the fixed per-country and regional prices they used before."""
+    from flightdrop.config import TypicalRule
+    return replace(shipped_cfg, typical=TypicalRule(enabled=False), thresholds_usd=cfg.thresholds_usd,
+                   thresholds_by_country={c: {"economy": p} for c, p in LEGACY_BARS.items()})
+
 
 @pytest.mark.parametrize("dest,price,expected_reason", [
     ("ROM", 422.0, "under $650 Italy economy target"),
@@ -80,8 +91,8 @@ def test_country_bars_work_for_metro_codes(cfg):
     ("ALA", 1100.0, "under $1,100 Kazakhstan economy target"),
     ("NQZ", 1090.0, "under $1,100 Kazakhstan economy target"),
 ])
-def test_users_destinations_alert_at_a_good_price(shipped_cfg, dest, price, expected_reason):
-    s = ev(make_deal(destination=dest, price_usd=price), shipped_cfg)
+def test_users_destinations_alert_at_a_good_price(legacy_cfg, dest, price, expected_reason):
+    s = ev(make_deal(destination=dest, price_usd=price), legacy_cfg)
     assert s is not None and s.reasons == [expected_reason]
 
 
@@ -89,8 +100,8 @@ def test_users_destinations_alert_at_a_good_price(shipped_cfg, dest, price, expe
     ("ZRH", 760.0), ("FCO", 660.0), ("LIS", 560.0), ("GUA", 520.0), ("DPS", 1010.0),
     ("TYO", 760.0), ("SGN", 910.0), ("FRU", 1110.0), ("ALA", 1110.0),
 ])
-def test_users_destinations_do_not_alert_above_their_bar(shipped_cfg, dest, price):
-    assert ev(make_deal(destination=dest, price_usd=price), shipped_cfg) is None
+def test_users_destinations_do_not_alert_above_their_bar(legacy_cfg, dest, price):
+    assert ev(make_deal(destination=dest, price_usd=price), legacy_cfg) is None
 
 
 @pytest.mark.parametrize("dest", ["LAS", "DEN", "MIA", "CUN", "GDL", "BKK", "SEL", "DXB", "CAI", "SJO"])
@@ -386,3 +397,86 @@ def test_the_watch_is_one_direction_economy_and_respects_the_trip_window(shipped
     assert ev(mem_msp(100.0, cabin="business"), shipped_cfg) is None
     too_long = mem_msp(100.0, return_date=date(2027, 3, 1))
     assert ev(too_long, shipped_cfg) is None                                                           # 88-day trip
+
+
+# --- the typical-price rule ------------------------------------------------------------------------
+
+from flightdrop.config import TypicalRule  # noqa: E402
+from flightdrop.models import LiveQuote    # noqa: E402
+
+
+def tcfg(cfg, pct=15.0, low=True):
+    """Baseline config with the typical-price rule on and every fixed price removed."""
+    return replace(cfg, typical=TypicalRule(True, pct, low), thresholds_usd={}, thresholds_by_country={})
+
+
+def judged(cfg, price, **quote_kw):
+    return evaluate(make_deal(price_usd=price), cfg, None, 0, TODAY, quote=LiveQuote(price=price, **quote_kw))
+
+
+def test_a_fare_that_clears_every_filter_is_a_candidate_when_no_price_rule_hit(cfg):
+    s = evaluate(make_deal(price_usd=600.0), tcfg(cfg), None, 0, TODAY, allow_candidates=True)
+    assert s is not None and s.candidate is True and s.reasons == [] and s.score == 0.0
+    assert evaluate(make_deal(price_usd=600.0), tcfg(cfg), None, 0, TODAY) is None          # not asked for candidates
+
+
+def test_nothing_is_a_candidate_when_the_rule_is_off(cfg):
+    assert evaluate(make_deal(price_usd=9000.0), cfg, None, 0, TODAY, allow_candidates=True) is None
+
+
+def test_candidates_still_respect_every_filter(shipped_cfg):
+    for dest in ("LAS", "CUN", "BKK", "DXB", "SVO", "KBL"):                 # outside the list, or conflict zones
+        assert evaluate(make_deal(destination=dest, price_usd=100.0), shipped_cfg, None, 0, TODAY, allow_candidates=True) is None, dest
+    no_frontier = replace(shipped_cfg, airlines=AirlineFilter(exclude=("F9",)))
+    assert evaluate(make_deal(airline="F9"), no_frontier, None, 0, TODAY, allow_candidates=True) is None
+    too_long = make_deal(return_date=date(2027, 3, 1))
+    assert evaluate(too_long, shipped_cfg, None, 0, TODAY, allow_candidates=True) is None
+    for dest in ("LIS", "ZRH", "ROM", "TYO", "GUA", "DPS", "SGN", "ALA", "FRU"):    # the user's destinations pass
+        c = evaluate(make_deal(destination=dest, price_usd=500.0), shipped_cfg, None, 0, TODAY, allow_candidates=True)
+        assert c is not None and c.candidate, dest
+
+
+def test_a_price_well_below_googles_usual_price_is_a_deal(cfg):
+    s = judged(tcfg(cfg), 600.0, usual=750.0, level="typical")
+    assert s is not None and s.candidate is False
+    assert s.reasons == ["20% below the usual $750 (Google's recent average for this trip)"]
+    assert abs(s.discount - 0.2) < 1e-9
+
+
+def test_the_required_margin_is_inclusive_and_configurable(cfg):
+    assert judged(tcfg(cfg), 637.5, usual=750.0) is not None                  # exactly 15% under
+    assert judged(tcfg(cfg), 638.0, usual=750.0) is None
+    assert judged(tcfg(cfg, pct=25.0), 600.0, usual=750.0) is None            # stricter setting: 20% is not enough
+    assert judged(tcfg(cfg, pct=5.0), 700.0, usual=750.0) is not None
+
+
+def test_a_price_googles_rates_low_is_a_deal_even_without_a_big_discount(cfg):
+    s = judged(tcfg(cfg), 730.0, usual=750.0, level="low", typical_low=760.0, typical_high=900.0)
+    assert s is not None and s.reasons == ["Google rates this price low for the trip (typical $760-$900)"]
+    assert judged(tcfg(cfg, low=False), 730.0, usual=750.0, level="low") is None      # label ignored when switched off
+
+
+def test_both_reasons_show_when_both_apply(cfg):
+    s = judged(tcfg(cfg), 500.0, usual=750.0, level="low")
+    assert len(s.reasons) == 2 and abs(s.discount - (1 - 500 / 750)) < 1e-9
+
+
+def test_a_typical_or_high_priced_fare_is_not_a_deal(cfg):
+    assert judged(tcfg(cfg), 740.0, usual=740.0, level="typical") is None            # Rome on the day we measured it
+    assert judged(tcfg(cfg), 900.0, usual=750.0, level="high") is None
+
+
+def test_without_googles_usual_price_the_rule_cannot_judge(cfg):
+    assert judged(tcfg(cfg), 100.0) is None
+    assert judged(tcfg(cfg), 100.0, level="typical") is None
+
+
+def test_the_quote_is_ignored_when_the_rule_is_off(cfg):
+    plain = replace(cfg, thresholds_usd={}, thresholds_by_country={})
+    assert judged(plain, 100.0, usual=750.0, level="low") is None
+
+
+def test_fixed_prices_still_work_alongside_the_typical_rule(cfg):
+    mixed = replace(cfg, typical=TypicalRule(True, 15.0, True))                       # baseline keeps its regional bars
+    s = judged(mixed, 540.0, usual=560.0, level="typical")                            # under Europe's $550 bar, not 15% under usual
+    assert s is not None and s.reasons == ["under $550 europe economy target"]

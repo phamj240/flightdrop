@@ -6,6 +6,7 @@ import pytest
 from helpers import BASELINE_CONFIG, make_deal
 
 from flightdrop import main as cli
+from flightdrop.models import LiveQuote
 from flightdrop.notify.discord import NotifyError
 from flightdrop.sources import rss_deals, travelpayouts
 from flightdrop.sources.common import SourceError
@@ -19,7 +20,7 @@ CONFIG = str(BASELINE_CONFIG)
 def run(tmp_path, monkeypatch):
     """Run the CLI with a temp DB, fake sources, and a recording Discord poster."""
     state = {"deals": [make_deal(price_usd=400.0)], "posted": [], "notices": [], "fail_tp": False, "fail_rss": False,
-             "alt_calls": [], "live_calls": [], "live_price": None}
+             "alt_calls": [], "live_calls": [], "live_price": None, "usual": None, "level": None}
 
     def fake_tp(cfg, token, now, session=None, sleep=None):
         if state["fail_tp"]:
@@ -40,9 +41,12 @@ def run(tmp_path, monkeypatch):
         if state.get("live_error"):
             raise SourceError("HTTP 500")
         price = state["live_price"]
-        return deal.price_usd if price is None else price
+        price = deal.price_usd if price is None else price
+        if state["usual"] is not None or state["level"] is not None:
+            return LiveQuote(price=price, usual=state["usual"], level=state["level"])
+        return price
 
-    monkeypatch.setattr(cli, "live_price", fake_live)
+    monkeypatch.setattr(cli, "live_quote", fake_live)
     monkeypatch.setattr(travelpayouts, "fetch", fake_tp)
     monkeypatch.setattr(travelpayouts, "find_alternative", fake_alt)
     monkeypatch.setattr(rss_deals, "fetch", fake_rss)
@@ -277,3 +281,56 @@ def test_the_serpapi_key_is_never_printed(run, required, capsys, caplog):
     run("--dry-run", config=required, env=ENV_WITH_KEY, now=MIDDAY)
     captured = capsys.readouterr()
     assert SERP not in captured.out + captured.err + caplog.text
+
+
+# --- the typical-price rule through the command line -----------------------------------------------
+
+import yaml  # noqa: E402
+
+EURO_FARES = [("LIS", 900.0), ("LHR", 900.0), ("CDG", 900.0), ("FCO", 900.0), ("MAD", 900.0), ("BCN", 450.0)]
+
+
+@pytest.fixture
+def typical_config(tmp_path):
+    raw = yaml.safe_load(BASELINE_CONFIG.read_text())
+    raw.pop("thresholds_usd")                                 # no fixed prices: only the typical-price rule decides
+    raw["typical"] = {"enabled": True, "below_usual_pct": 15}
+    path = tmp_path / "typical.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    return str(path)
+
+
+@pytest.fixture
+def euro(run):
+    run.state["deals"] = [make_deal(destination=d, price_usd=p) for d, p in EURO_FARES]
+    return run
+
+
+def test_a_dry_run_lists_the_fares_that_would_be_checked_without_spending_a_search(euro, typical_config, capsys):
+    assert euro("--dry-run", config=typical_config, env=ENV_WITH_KEY, now=MIDDAY) == 0
+    out = capsys.readouterr().out
+    assert "WOULD CHECK: MSP→BCN economy $450 cached" in out and "a live Google check would decide" in out
+    assert euro.state["live_calls"] == [] and euro.state["posted"] == []
+
+
+def test_a_fare_well_under_googles_usual_price_is_posted_with_that_reason(euro, typical_config):
+    euro.state.update(live_price=480.0, usual=700.0, level="typical")
+    assert euro(config=typical_config, env=ENV_WITH_KEY, now=MIDDAY) == 0
+    (_, scored), = euro.state["posted"]
+    assert scored.deal.destination == "BCN" and scored.live_price_usd == 480.0
+    assert scored.reasons == ["31% below the usual $700 (Google's recent average for this trip)"]
+    assert euro.state["live_calls"] == [("BCN", SERP)]                          # exactly one search for six fares
+
+
+def test_a_fare_google_calls_normal_is_not_posted_and_is_not_rechecked(euro, typical_config):
+    euro.state.update(live_price=455.0, usual=460.0, level="typical")
+    assert euro(config=typical_config, env=ENV_WITH_KEY, now=MIDDAY) == 0
+    assert euro.state["posted"] == [] and len(euro.state["live_calls"]) == 1
+    euro(config=typical_config, env=ENV_WITH_KEY, now=MIDDAY.replace(hour=20))
+    assert len(euro.state["live_calls"]) == 1                                   # remembered; no second paid search
+
+
+def test_the_typical_rule_always_requires_the_live_check_so_no_key_means_a_notice(euro, typical_config):
+    assert euro(config=typical_config, now=MIDDAY) == 0                         # no SERPAPI_KEY
+    assert euro.state["posted"] == []
+    assert len(euro.state["notices"]) == 1 and "paused" in euro.state["notices"][0]

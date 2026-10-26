@@ -53,49 +53,44 @@ trip:
   depart_months: []              # e.g. [3, 4, 10] to only depart in those months
 
 # --- What counts as a deal ------------------------------------------------
-# "Cheap vs. usual": alert if price <= max_ratio * median of the last window_days.
+# Old-style "cheap vs. usual" using only our own cached-price history (which can be unreliable, so the
+# typical-price rule below is the main one): alert if price <= max_ratio * median of the last window_days.
 # Needs min_samples past observations of the same route + cabin to apply.
 relative:
   window_days: 60
   min_samples: 5
   max_ratio: 0.70
 
-# "Fixed price": alert if round-trip price (USD) <= threshold for the destination region.
-# Starting guesses; tune after seeing real data.
-thresholds_usd:
-  domestic:     {economy: 150, business: 600}
-  nearby_intl:  {economy: 300, business: 900}    # Canada, Mexico, Caribbean, Central America
-  europe:       {economy: 550, business: 1600}
-  asia_oceania: {economy: 750, business: 2200}
-  other_intl:   {economy: 650, business: 2000}   # South America, Africa, Middle East
-# (the business numbers are currently unused: there is no business fare data to compare against)
+# What counts as a deal: the TYPICAL-PRICE rule. Fares that pass your filters are candidates; the most
+# promising ones are checked against Google Flights, which reports how that exact trip has been priced
+# over the last ~60 days. A fare is a deal if its live price is at least `below_usual_pct` percent under
+# the usual (average) price, or if Google itself rates the price "low". There are no hand-picked prices
+# per region or country. The checks are limited by the free quota (see `verify` below).
+typical:
+  enabled: true
+  below_usual_pct: 15            # raise to see only bigger bargains, lower to see more alerts
+  accept_google_low: true
 
-# Country-specific "good deal" prices (round trip, USD). These override the regional price above for
-# that destination country. Starting guesses based on the live fare data; tune them as you learn what
-# a good price really is. Switzerland and Italy are looser than the rest of Europe ($550) on purpose.
-thresholds_by_country:
-  GT: {economy: 500}      # Guatemala
-  CH: {economy: 750}      # Switzerland
-  IT: {economy: 650}      # Italy
-  ID: {economy: 1000}     # Indonesia
-  JP: {economy: 750}      # Japan
-  VN: {economy: 900}      # Vietnam
-  KG: {economy: 1100}     # Kyrgyzstan
-  KZ: {economy: 1100}     # Kazakhstan
+# Optional fixed prices (round trip, USD) as an EXTRA way for a fare to qualify. Not used right now:
+# thresholds_usd:
+#   europe: {economy: 550}
+# thresholds_by_country:
+#   IT: {economy: 650}
 
 # Re-alert an already-posted deal only if the price dropped by at least this fraction.
 realert_min_drop: 0.10
 
 # Live-price check against Google Flights (the same prices your alert links show), via SerpApi
-# (free plan: 250 searches/month). The cached fares alone were found to be days old and often from
-# discount agencies whose prices don't hold, so each alert is checked first and its price replaced with
-# Google's. A fare that no longer beats your price bars is dropped.
+# (free plan: 250 searches/month, so about 8 a day). The cached fares alone were found to be days old
+# and often from discount agencies whose prices don't hold, and Google's price history is also what the
+# typical-price rule above needs. Each alert is checked first and its price replaced with Google's.
 verify:
   enabled: true
   require_live: true             # a deal that can't be checked is held, never posted unverified
-  daily_budget: 6
+  daily_budget: 8
   monthly_budget: 240
-  max_live_over_cached: 1.15     # also drop the deal if the live price is >15% above the cached one
+  max_live_over_cached: 1.15     # fixed-price rules only: drop a deal whose live price is >15% above the cached one
+                                 # (not used with the typical-price rule, which compares with Google's usual price)
 
 # Human-curated deal feeds. Only posts departing from a keyword city are kept (title + link only).
 # These feeds rarely mention any one airport, so expect an occasional extra deal, not a stream.

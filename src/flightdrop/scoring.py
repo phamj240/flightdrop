@@ -6,7 +6,7 @@ from typing import Callable
 from .airports import country_for, country_name, region_for
 from .config import Config
 from .filters import match_watch, passes_airline, passes_destination, passes_trip
-from .models import Deal, ScoredDeal
+from .models import Deal, LiveQuote, ScoredDeal
 
 # Curated feed deals are already human-vetted bargains. They always qualify
 # (subject to destination filters) and rank below strong measured discounts.
@@ -20,8 +20,15 @@ def evaluate(
     samples: int,
     today: date,
     watch_previous: Callable[[str], float | None] | None = None,
+    quote: LiveQuote | None = None,
+    allow_candidates: bool = False,
 ) -> ScoredDeal | None:
     """Return a ScoredDeal if the deal qualifies, else None.
+
+    ``quote`` is Google's live price and price insights for the trip (after a live check). With the
+    typical-price rule on, a fare qualifies if that live price is well below the route's usual price
+    or Google rates it low. With ``allow_candidates``, a fare that passed every filter but hit no
+    rule yet is returned as a *candidate* that still needs that live check.
 
     Order: trip filter -> airline filter -> watchlist -> destination filter -> fixed/relative rules.
     A watchlist match skips the destination filter and the price rules, but not the trip or
@@ -86,7 +93,20 @@ def evaluate(
         # A measured discount vs. the route's own history beats the fixed-target one for ranking.
         discount = 1 - price / usual
 
+    if cfg.typical.enabled and quote is not None:
+        google_usual = quote.usual
+        if google_usual and price <= google_usual * (1 - cfg.typical.below_usual_pct / 100):
+            pct = round((1 - price / google_usual) * 100)
+            reasons.append(f"{pct}% below the usual ${google_usual:,.0f} (Google's recent average for this trip)")
+            discount = max(discount or 0.0, 1 - price / google_usual)
+        if cfg.typical.accept_google_low and quote.level == "low":
+            span = f" (typical ${quote.typical_low:,.0f}-${quote.typical_high:,.0f})" if quote.typical_low and quote.typical_high else ""
+            reasons.append(f"Google rates this price low for the trip{span}")
+            discount = max(discount or 0.0, (1 - price / google_usual) if google_usual else 0.05)
+
     if not reasons:
+        if allow_candidates and cfg.typical.enabled and quote is None:
+            return ScoredDeal(deal, 0.0, [], usual, None, candidate=True)
         return None
     return ScoredDeal(deal, discount if discount is not None else 0.0, reasons, usual, discount)
 

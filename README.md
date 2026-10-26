@@ -11,15 +11,26 @@ one of the deal websites below happens to post one from your airports. Expect th
 
 ## How it decides what's a deal
 
-A fare is posted if it passes **either** rule:
+There are **no hand-picked prices**. A fare is a deal when its live Google Flights price is meaningfully **below
+the average price that exact trip has been at**:
 
-- **Fixed price:** at or under your target for that region and cabin (`thresholds_usd` in `config.yaml`).
-- **Cheap vs. usual:** at least 30% below that route's median price over the last 60 days. This needs a few
-  weeks of history to kick in; the fixed-price rule works from day one.
+1. The free fare data lists the cheapest cached fare to each destination. Fares that pass your filters (places,
+   trip length, airlines) become *candidates*.
+2. The free Google quota allows about 8 checks a day, so the bot picks the most promising candidates: the ones
+   that look cheapest compared with what it has learned about that route, or compared with similar destinations
+   today when it knows nothing yet. A fare that turned out to be a mirage (cheap in the cache, normal on Google)
+   is remembered, so it stops using up checks.
+3. Each check asks Google for the live price **and** its price history for that trip over about 60 days. If the
+   live price is at least **15% under the usual (median) price**, or Google itself rates the price **low**, it's
+   a deal and the alert shows Google's real price and why. Change `below_usual_pct` under `typical:` in
+   `config.yaml` for stricter or looser.
+
+It learns over time: every check teaches it what each route usually costs. You can still add fixed prices
+(`thresholds_usd` / `thresholds_by_country`) as an extra way to qualify, but you no longer have to.
 
 On top of that you can restrict where you go, set trip lengths, and add a **watchlist** of specific routes with a
-target price that always alerts. At most 5 alerts go out per day, best first, and a deal is never posted twice
-unless its price drops by 10% or more.
+target price (fixed, or one that keeps getting lower). At most 5 alerts go out per day, best first, and a deal is
+never posted twice unless its price drops by 10% or more.
 
 ## When alerts are sent
 

@@ -89,3 +89,17 @@ def test_every_metro_expansion_is_made_of_real_airport_codes():
     from flightdrop.airports import _METRO_AIRPORTS
     for metro, airports in _METRO_AIRPORTS.items():
         assert airports and all(len(a) == 3 and a.isalpha() and a.isupper() for a in airports), metro
+
+
+@pytest.mark.parametrize("code,expected", [
+    ("MRS", "Marseille"), ("HNL", "Honolulu"), ("VCE", "Venice"), ("SHA", "Shanghai"), ("FNA", "Freetown"),
+    ("LIS", "Lisbon"), ("NYC", "New York"), ("PBI", "West Palm Beach"), ("ZZZ", "ZZZ"),
+])
+def test_city_names_are_readable(code, expected):
+    assert city_name(code) == expected
+
+
+def test_no_city_name_contains_a_comma_or_parenthesis():
+    from flightdrop.airports import _load
+    odd = [c for c in ("MRS", "HNL", "SHA", "VCE", "FNA", "LHR", "JFK", "CUN", "SJO") if any(ch in city_name(c) for ch in ",(")]
+    assert odd == []

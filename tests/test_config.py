@@ -30,20 +30,19 @@ def test_the_real_config_yaml_loads_and_has_the_users_destinations(shipped_cfg):
     assert shipped_cfg.destinations.include_regions == ("europe",)
     assert set(shipped_cfg.destinations.include_countries) == {"GT", "ID", "JP", "VN", "KG", "KZ"}
     assert set(shipped_cfg.destinations.exclude_countries) == {"IQ", "AF", "SY", "YE", "LY", "SO", "SD", "SS", "RU", "BY"}
-    assert shipped_cfg.thresholds_by_country == {
-        "GT": {"economy": 500.0}, "CH": {"economy": 750.0}, "IT": {"economy": 650.0}, "ID": {"economy": 1000.0},
-        "JP": {"economy": 750.0}, "VN": {"economy": 900.0}, "KG": {"economy": 1100.0}, "KZ": {"economy": 1100.0},
-    }
+    # no hand-picked prices: the typical-price rule decides, using Google's price history
+    assert shipped_cfg.thresholds_usd == {} and shipped_cfg.thresholds_by_country == {}
+    assert shipped_cfg.typical.enabled is True and shipped_cfg.typical.below_usual_pct == 15.0
+    assert shipped_cfg.typical.accept_google_low is True
     assert shipped_cfg.airlines.exclude == () and shipped_cfg.airlines.alternatives_for == ("F9", "NK")
     assert shipped_cfg.max_alerts_per_day == 5
 
 
-def test_every_priced_country_is_actually_a_destination_the_user_wants(shipped_cfg):
-    """Guards against pricing a country the include filter would never let through."""
+def test_every_country_the_user_named_gets_through_the_destination_filter(shipped_cfg):
+    """Guards against a destination the include filter would never let through (e.g. an unknown airport code)."""
     from flightdrop.airports import region_for
     from flightdrop.filters import passes_destination
     wanted_codes = {"GT": "GUA", "CH": "ZRH", "IT": "FCO", "ID": "DPS", "JP": "NRT", "VN": "SGN", "KG": "FRU", "KZ": "ALA"}
-    assert set(wanted_codes) == set(shipped_cfg.thresholds_by_country)
     for country, airport in wanted_codes.items():
         assert passes_destination(airport, shipped_cfg.destinations), (country, airport, region_for(airport))
 
@@ -77,7 +76,9 @@ def mutated(raw, fn):
         (lambda r: r.update(home_airports=["MSPX"]), "home_airports"),
         (lambda r: r.update(home_airports=[]), "at least one"),
         (lambda r: r.update(cabins=["first"]), "cabins"),
-        (lambda r: r["thresholds_usd"]["europe"].pop("business"), "thresholds_usd.europe.business"),
+        (lambda r: r["thresholds_usd"]["europe"].update(economy="cheap"), "thresholds_usd.europe.economy"),
+        (lambda r: r["thresholds_usd"].update(mars={"economy": 1}), "unknown region"),
+        (lambda r: r["thresholds_usd"]["europe"].update(first=5), "unknown cabin"),
         (lambda r: r.update(max_alerts_per_day=0), "max_alerts_per_day"),
         (lambda r: r["relative"].update(max_ratio=1.5), "max_ratio"),
         (lambda r: r["destinations"].update(include_regions=["mars"]), "unknown region"),
@@ -188,3 +189,43 @@ def test_the_real_config_scans_only_from_minneapolis_and_its_feed_keywords_match
     origins = {o for _, o in rss_deals._keyword_origins(shipped_cfg)}
     assert origins == {"MSP"}                        # every keyword maps to MSP; none is silently ignored
     assert len(rss_deals._keyword_origins(shipped_cfg)) == len(shipped_cfg.rss.keywords)
+
+
+# --- the typical-price rule ---------------------------------------------------------------------
+
+def test_typical_rule_parses_with_defaults_and_overrides(raw):
+    assert parse_config(raw).typical.enabled is False                              # baseline: off
+    raw["typical"] = {"enabled": True}
+    t = parse_config(raw).typical
+    assert (t.enabled, t.below_usual_pct, t.accept_google_low) == (True, 15.0, True)
+    raw["typical"] = {"enabled": True, "below_usual_pct": 25, "accept_google_low": False}
+    t = parse_config(raw).typical
+    assert (t.below_usual_pct, t.accept_google_low) == (25.0, False)
+
+
+@pytest.mark.parametrize("bad,message", [
+    ({"enabled": True, "below_usual_pct": 0}, "between 0 and 90"),
+    ({"enabled": True, "below_usual_pct": 95}, "between 0 and 90"),
+    ({"enabled": True, "below_usual_pct": "lots"}, "must be a number"),
+    ("on", "must be a mapping"),
+])
+def test_invalid_typical_rule(raw, bad, message):
+    raw["typical"] = bad
+    with pytest.raises(ConfigError, match=message):
+        parse_config(raw)
+
+
+def test_the_typical_rule_needs_live_checks_to_be_on(raw):
+    raw["typical"] = {"enabled": True}
+    raw["verify"]["enabled"] = False
+    with pytest.raises(ConfigError, match="typical.enabled needs verify.enabled"):
+        parse_config(raw)
+
+
+def test_fixed_prices_are_optional(raw):
+    raw.pop("thresholds_usd")
+    raw.pop("thresholds_by_country", None)
+    cfg = parse_config(raw)
+    assert cfg.thresholds_usd == {} and cfg.thresholds_by_country == {}
+    raw["thresholds_usd"] = {"europe": {"economy": 550}}                           # a partial table is fine too
+    assert parse_config(raw).thresholds_usd == {"europe": {"economy": 550.0}}

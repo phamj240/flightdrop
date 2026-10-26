@@ -7,13 +7,14 @@ searches count against the free quota is confirmed when the account is created.
 from __future__ import annotations
 
 import logging
+import statistics
 import time
 from typing import Callable
 
 import requests
 
 from ..airports import airport_codes_for
-from ..models import Deal
+from ..models import Deal, LiveQuote
 from .common import SourceError, get_json
 
 log = logging.getLogger("flightdrop.serpapi")
@@ -22,14 +23,19 @@ URL = "https://serpapi.com/search.json"
 TRAVEL_CLASS = {"economy": 1, "business": 3}   # SerpApi: 1 economy, 2 premium, 3 business, 4 first
 
 
-def live_price(
+MIN_HISTORY_POINTS = 8      # fewer daily prices than this and the typical range is used instead
+
+
+def live_quote(
     deal: Deal,
     api_key: str,
     session: requests.Session | None = None,
     sleep: Callable[[float], None] = time.sleep,
-) -> float | None:
-    """Lowest current round-trip price in USD for this deal's route and dates, or None.
+) -> LiveQuote | None:
+    """Google's lowest current round-trip price for this deal's route and dates, with its price insights.
 
+    ``usual`` is the median of Google's ~60-day price history for the trip (the average price it has
+    been at); if the history is short it falls back to the middle of Google's "typical price range".
     None means "couldn't tell" (no dates, or Google returned nothing), not "no flights".
     Raises SourceError on API/network failure.
     """
@@ -63,4 +69,41 @@ def live_price(
         for f in payload.get(key) or []
         if isinstance(f, dict) and isinstance(f.get("price"), (int, float)) and f["price"] > 0
     ]
-    return min(prices) if prices else None
+    if not prices:
+        return None
+
+    insights = payload.get("price_insights")
+    insights = insights if isinstance(insights, dict) else {}
+    history = [
+        float(p[1])
+        for p in insights.get("price_history") or []
+        if isinstance(p, (list, tuple)) and len(p) == 2 and isinstance(p[1], (int, float)) and p[1] > 0
+    ]
+    rng = insights.get("typical_price_range")
+    low = high = None
+    if isinstance(rng, (list, tuple)) and len(rng) == 2 and all(isinstance(x, (int, float)) and x > 0 for x in rng):
+        low, high = float(rng[0]), float(rng[1])
+    usual = None
+    if len(history) >= MIN_HISTORY_POINTS:
+        usual = statistics.median(history)
+    elif low is not None and high is not None:
+        usual = (low + high) / 2
+    level = insights.get("price_level")
+    return LiveQuote(
+        price=min(prices),
+        usual=usual,
+        level=level if level in ("low", "typical", "high") else None,
+        typical_low=low,
+        typical_high=high,
+    )
+
+
+def live_price(
+    deal: Deal,
+    api_key: str,
+    session: requests.Session | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> float | None:
+    """Just the lowest live price (see ``live_quote``)."""
+    quote = live_quote(deal, api_key, session=session, sleep=sleep)
+    return quote.price if quote else None

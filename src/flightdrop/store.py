@@ -5,7 +5,7 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .models import Deal
+from .models import Deal, LiveQuote
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations(
@@ -36,7 +36,15 @@ CREATE TABLE IF NOT EXISTS live_checks(
   cached_price REAL NOT NULL,
   live_price REAL,
   outcome TEXT NOT NULL,
-  checked_at TEXT NOT NULL
+  checked_at TEXT NOT NULL,
+  usual REAL,
+  level TEXT
+);
+CREATE TABLE IF NOT EXISTS route_baselines(
+  route TEXT PRIMARY KEY,
+  usual REAL,
+  ratio REAL NOT NULL,
+  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS api_usage(
   day TEXT NOT NULL,
@@ -51,6 +59,7 @@ ALERT_RETENTION_DAYS = 180
 WATCH_STATE_RETENTION_DAYS = 90     # a moving watch forgets its last price after this long
 LIVE_CHECK_MEMORY_HOURS = 24        # don't pay for the same live check twice in a day
 LIVE_CHECK_RETENTION_DAYS = 3
+ROUTE_BASELINE_RETENTION_DAYS = 60
 
 
 def _iso(dt: datetime) -> str:
@@ -63,6 +72,11 @@ class Store:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path))
         self.db.executescript(_SCHEMA)
+        # An older saved database may lack columns added later; add them in place.
+        have = {r[1] for r in self.db.execute("PRAGMA table_info(live_checks)")}
+        for column, kind in (("usual", "REAL"), ("level", "TEXT")):
+            if column not in have:
+                self.db.execute(f"ALTER TABLE live_checks ADD COLUMN {column} {kind}")
 
     def close(self) -> None:
         self.db.commit()
@@ -150,18 +164,50 @@ class Store:
 
     # --- live price checks -------------------------------------------------
 
-    def recent_live_check(self, deal_key: str, cached_price: float, now: datetime) -> tuple[str, float | None] | None:
-        """(outcome, live_price) of a check of this exact deal at this cached price in the last day."""
+    def recent_live_check(
+        self, deal_key: str, cached_price: float, now: datetime
+    ) -> tuple[str, LiveQuote | None] | None:
+        """(outcome, quote) of a check of this exact deal at this cached price in the last day."""
         row = self.db.execute(
-            "SELECT outcome, live_price FROM live_checks WHERE deal_key = ? AND cached_price = ? AND checked_at >= ?",
+            "SELECT outcome, live_price, usual, level FROM live_checks"
+            " WHERE deal_key = ? AND cached_price = ? AND checked_at >= ?",
             (deal_key, cached_price, _iso(now - timedelta(hours=LIVE_CHECK_MEMORY_HOURS))),
         ).fetchone()
+        if row is None:
+            return None
+        outcome, live, usual, level = row
+        return outcome, (None if live is None else LiveQuote(price=live, usual=usual, level=level))
+
+    def save_live_check(
+        self, deal_key: str, cached_price: float, quote: LiveQuote | float | None, outcome: str, now: datetime
+    ) -> None:
+        if isinstance(quote, (int, float)):
+            quote = LiveQuote(price=float(quote))
+        self.db.execute(
+            "INSERT OR REPLACE INTO live_checks(deal_key, cached_price, live_price, outcome, checked_at, usual, level)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (deal_key, cached_price, None if quote is None else quote.price, outcome, _iso(now),
+             None if quote is None else quote.usual, None if quote is None else quote.level),
+        )
+        self.db.commit()
+
+    # --- what we learn about each route ---------------------------------------
+
+    def route_baseline(self, route: str) -> tuple[float | None, float] | None:
+        """(usual price, live/cached ratio) learned from past live checks of this route, or None."""
+        row = self.db.execute("SELECT usual, ratio FROM route_baselines WHERE route = ?", (route,)).fetchone()
         return None if row is None else (row[0], row[1])
 
-    def save_live_check(self, deal_key: str, cached_price: float, live_price: float | None, outcome: str, now: datetime) -> None:
+    def set_route_baseline(self, route: str, usual: float | None, ratio: float, now: datetime) -> None:
+        """Remember Google's usual price and how far the cached price runs below the live one.
+
+        The ratio is smoothed with the previous value so a single odd fare doesn't dominate.
+        """
         self.db.execute(
-            "INSERT OR REPLACE INTO live_checks(deal_key, cached_price, live_price, outcome, checked_at) VALUES (?, ?, ?, ?, ?)",
-            (deal_key, cached_price, live_price, outcome, _iso(now)),
+            "INSERT INTO route_baselines(route, usual, ratio, updated_at) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(route) DO UPDATE SET usual = COALESCE(excluded.usual, route_baselines.usual),"
+            " ratio = (route_baselines.ratio + excluded.ratio) / 2, updated_at = excluded.updated_at",
+            (route, usual, ratio, _iso(now)),
         )
         self.db.commit()
 
@@ -199,6 +245,10 @@ class Store:
         self.db.execute(
             "DELETE FROM alerts WHERE alerted_at < ?",
             (_iso(now - timedelta(days=ALERT_RETENTION_DAYS)),),
+        )
+        self.db.execute(
+            "DELETE FROM route_baselines WHERE updated_at < ?",
+            (_iso(now - timedelta(days=ROUTE_BASELINE_RETENTION_DAYS)),),
         )
         self.db.execute(
             "DELETE FROM live_checks WHERE checked_at < ?",

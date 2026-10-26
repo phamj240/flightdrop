@@ -47,6 +47,17 @@ class Deal:
         return f"{self.route_key}|{dep}|{ret}"
 
 
+@dataclass(frozen=True)
+class LiveQuote:
+    """What Google Flights says right now for one trip, plus its own sense of what is normal."""
+
+    price: float                        # lowest round-trip price today
+    usual: float | None = None          # the route's usual price: median of Google's ~60-day price history
+    level: str | None = None            # Google's verdict on today's price: "low" | "typical" | "high"
+    typical_low: float | None = None
+    typical_high: float | None = None
+
+
 @dataclass
 class ScoredDeal:
     deal: Deal
@@ -62,3 +73,7 @@ class ScoredDeal:
     alternative_checked: bool = False
     # Set for moving-target watchlist hits: the route whose "previous price" this alert will update.
     watch_key: str | None = None
+    # A fare that passed every filter but hit no price rule: it only qualifies if Google's live
+    # data says it is below the route's usual price. ``cheapness`` ranks which ones to check.
+    candidate: bool = False
+    cheapness: float | None = None

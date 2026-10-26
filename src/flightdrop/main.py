@@ -30,7 +30,7 @@ from .models import Deal, ScoredDeal
 from .notify import discord
 from .sources import rss_deals, travelpayouts
 from .sources.common import SourceError
-from .sources.serpapi_verify import live_price
+from .sources.serpapi_verify import live_quote
 from .store import Store
 
 log = logging.getLogger("flightdrop")
@@ -67,6 +67,12 @@ def describe(s: ScoredDeal) -> str:
     d = s.deal
     if d.curated:
         return f"[feed] {d.title}\n        {google_flights_url(d)}"
+    if s.candidate:
+        cheap = f"; looks {round((1 - s.cheapness) * 100)}% under what we'd expect" if s.cheapness is not None else ""
+        return (
+            f"{d.origin}→{d.destination} {d.cabin} ${d.price_usd:,.0f} cached {airline_name(d.airline) or ''} "
+            f"({d.depart_date} → {d.return_date}) [a live Google check would decide{cheap}]\n        {google_flights_url(d)}"
+        )
     dates = f"{d.depart_date} → {d.return_date}"
     text = (
         f"{d.origin}→{d.destination} {d.cabin} ${d.price_usd:,.0f} {airline_name(d.airline) or ''} ({dates}) "
@@ -143,7 +149,7 @@ def main(
     key = env.get("SERPAPI_KEY")
     verify = None
     if cfg.verify.enabled and key and not args.dry_run:
-        verify = partial(live_price, api_key=key, session=session)
+        verify = partial(live_quote, api_key=key, session=session)
 
     # Free, read-only lookups, so they also run in a dry run.
     token = env.get("TRAVELPAYOUTS_TOKEN")
@@ -155,7 +161,7 @@ def main(
 
     if args.dry_run:
         def post(s: ScoredDeal) -> None:
-            print("WOULD ALERT:", describe(s))
+            print("WOULD CHECK:" if s.candidate else "WOULD ALERT:", describe(s))
     else:
         post = partial(_post_discord, webhook, session=session)  # type: ignore[arg-type]
 
@@ -168,7 +174,8 @@ def main(
         if os.path.exists(args.db):
             shutil.copyfile(args.db, db_path)
     # Only deals whose live Google price was checked may go out (a dry run never spends the quota).
-    require_live = cfg.verify.enabled and cfg.verify.require_live and not args.dry_run
+    # The typical-price rule can only judge a fare with Google's live data, so it always requires it.
+    require_live = cfg.verify.enabled and (cfg.verify.require_live or cfg.typical.enabled) and not args.dry_run
     if require_live and verify is None:
         log.warning("live price checking is required but SERPAPI_KEY is not set: deals will be held")
 
@@ -176,7 +183,7 @@ def main(
     try:
         result = pipeline.run_scan(
             deals, cfg, store, now, post=post, verify=verify, alternative=alternative,
-            alerts_allowed=alerts_allowed, require_live=require_live,
+            alerts_allowed=alerts_allowed, require_live=require_live, preview_candidates=args.dry_run,
         )
         if result.unverifiable and webhook and not args.dry_run:
             _notify_unverifiable(webhook, result, store, cfg, now, session)
@@ -186,7 +193,7 @@ def main(
             shutil.rmtree(scratch, ignore_errors=True)
 
     log.info(
-        "%d candidates, %d qualified, %d new, %d slot(s) left today -> %d alert(s)%s",
+        "%d fares, %d worth a look, %d new, %d slot(s) left today -> %d alert(s)%s",
         result.candidates, result.qualified, result.new, result.slots, len(result.alerts),
         (f" ({result.failed_posts} failed to post)" if result.failed_posts else "")
         + (f" ({result.held} held for the alert hours)" if result.held else "")
@@ -204,13 +211,13 @@ def _notify_unverifiable(
         return
     if result.unverifiable == "no key":
         message = (
-            f"{result.held_unverified} deal(s) are waiting: live price checking is required but no SerpApi key is set. "
+            "Alerts are paused: deals have to be checked against Google's live prices, but no SerpApi key is set. "
             "Add a free key as the SERPAPI_KEY secret in the GitHub repo (Settings > Secrets and variables > Actions) "
-            "to resume alerts."
+            "to resume."
         )
     else:
         message = (
-            f"{result.held_unverified} deal(s) are waiting: the live price check (SerpApi) is failing. "
+            "Alerts are paused: the live price check (SerpApi) is failing. "
             "Open the latest run in the repo's Actions tab to see why."
         )
     try:

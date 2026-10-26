@@ -151,7 +151,7 @@ def test_live_price_marks_the_deal_verified(cfg, store):
     r = run_scan([make_deal(price_usd=400.0)], cfg, store, NOW, post=post, verify=verifier({"LIS": 410.0}))
     s = post.sent[0]
     assert (s.verification, s.live_price_usd, r.verified) == ("live", 410.0, 1)
-    assert store.last_alert_price(s.deal.deal_key) == 410.0       # the real price is what we record
+    assert store.last_alert_price(s.deal.deal_key) == 400.0       # logged at the cached price: that is what repeats are judged by
 
 
 def test_a_much_higher_live_price_drops_the_deal_and_the_next_one_takes_the_slot(cfg, store):
@@ -491,3 +491,207 @@ def test_no_key_outranks_error_in_the_reported_reason(cfg, store):
     r2 = run_scan([make_deal(destination="LHR", price_usd=400.0)], cfg, Store(":memory:"), NOW, post=Poster(),
                   verify=scripted([SourceError("x")], []), require_live=True)
     assert r2.unverifiable == "error"
+
+
+# --- the typical-price rule: which fares get checked, and what is learned ------------------------------
+
+from flightdrop.config import TypicalRule  # noqa: E402
+from flightdrop.models import LiveQuote    # noqa: E402
+
+EURO = ["LIS", "LHR", "CDG", "FCO", "MAD", "BCN"]
+
+
+def tcfg(cfg, **verify):
+    out = replace(cfg, typical=TypicalRule(True, 15.0, True), thresholds_usd={}, thresholds_by_country={})
+    return replace(out, verify=replace(out.verify, **verify)) if verify else out
+
+
+def euro_fares(prices):
+    return [make_deal(destination=d, price_usd=p) for d, p in zip(EURO, prices)]
+
+
+def google(by_dest, calls=None):
+    """A verifier returning a LiveQuote (or error/None) per destination, logging every call."""
+    def verify(deal):
+        if calls is not None:
+            calls.append(deal.destination)
+        result = by_dest[deal.destination]
+        if isinstance(result, Exception):
+            raise result
+        return result
+    return verify
+
+
+# one clearly cheap fare among six European ones: BCN
+CHEAP_BCN = [900, 900, 900, 900, 900, 450]
+
+
+def test_only_clearly_cheap_fares_are_worth_a_google_check(cfg, store):
+    post, calls = Poster(), []
+    r = run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=post,
+                 verify=google({"BCN": LiveQuote(price=480.0, usual=700.0)}, calls), require_live=True)
+    assert calls == ["BCN"]                                                     # the other five are not candidates
+    s = post.sent[0]
+    assert (s.deal.destination, s.live_price_usd, s.verification) == ("BCN", 480.0, "live")
+    assert s.reasons == ["31% below the usual $700 (Google's recent average for this trip)"]
+    assert r.held_unverified == 0
+
+
+def test_when_nothing_looks_cheap_no_checks_are_spent(cfg, store):
+    calls = []
+    run_scan(euro_fares([700, 710, 720, 730, 740, 705]), tcfg(cfg), store, NOW, post=Poster(),
+             verify=google({}, calls), require_live=True)
+    assert calls == []
+
+
+def test_a_fare_that_google_says_is_normal_is_not_posted(cfg, store):
+    post = Poster()
+    r = run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=post,
+                 verify=google({"BCN": LiveQuote(price=455.0, usual=460.0, level="typical")}), require_live=True)
+    assert post.sent == [] and r.dropped_after_verify == 1
+
+
+def test_a_known_usual_price_makes_a_good_fare_a_candidate_without_any_peers(cfg, store):
+    store.set_route_baseline("MSP-LIS", 800.0, 1.0, NOW)
+    post, calls = Poster(), []
+    run_scan([make_deal(destination="LIS", price_usd=600.0)], tcfg(cfg), store, NOW, post=post,
+             verify=google({"LIS": LiveQuote(price=610.0, usual=800.0)}, calls), require_live=True)
+    assert calls == ["LIS"] and len(post.sent) == 1
+
+
+def test_a_fake_cheap_fare_is_learned_and_stops_using_up_the_quota(cfg, store):
+    """The Rome case: cached $422, Google $740 and that is also its usual price."""
+    fares = [make_deal(destination="ROM", price_usd=422.0)] + [make_deal(destination=d, price_usd=705.0) for d in ("LIS", "LHR", "CDG")]
+    calls, post = [], Poster()
+    verify = google({"ROM": LiveQuote(price=740.0, usual=740.0, level="typical")}, calls)
+    run_scan(fares, tcfg(cfg), store, NOW, post=post, verify=verify, require_live=True)
+    assert calls == ["ROM"] and post.sent == []
+    usual, ratio = store.route_baseline("MSP-ROM")
+    assert usual == 740.0 and abs(ratio - 740 / 422) < 1e-9
+    for day in (1, 2, 3):                                                      # the next days: its memory expires, but it's no longer promising
+        run_scan(fares, tcfg(cfg), store, NOW + timedelta(days=day), post=post, verify=verify, require_live=True)
+    assert calls == ["ROM"]                                                     # never checked again
+
+
+def test_unknown_routes_are_checked_last_but_not_never(cfg, store):
+    fares = euro_fares(CHEAP_BCN) + [make_deal(destination="NRT", price_usd=900.0)]          # NRT: no peers, no baseline
+    calls = []
+    run_scan(fares, tcfg(cfg, daily_budget=1), store, NOW, post=Poster(),
+             verify=google({"BCN": LiveQuote(price=480.0, usual=700.0), "NRT": LiveQuote(price=900.0, usual=900.0)}, calls),
+             require_live=True)
+    assert calls == ["BCN"]                                                     # the known-cheap one gets the single check
+    run_scan(fares, tcfg(cfg, daily_budget=1), store, NOW + timedelta(days=1), post=Poster(),
+             verify=google({"BCN": LiveQuote(price=480.0, usual=700.0), "NRT": LiveQuote(price=900.0, usual=900.0)}, calls),
+             require_live=True)
+    assert calls == ["BCN", "NRT"]                                              # next day: BCN already alerted; NRT finally learned
+    assert store.route_baseline("MSP-NRT") == (900.0, 1.0)
+
+
+def test_running_out_of_checks_is_normal_and_silent_for_candidates(cfg, store):
+    fares = euro_fares([900, 900, 900, 900, 500, 510])                          # two candidates: MAD and BCN
+    post, calls = Poster(), []
+    r = run_scan(fares, tcfg(cfg, daily_budget=1), store, NOW, post=post,
+                 verify=google({"MAD": LiveQuote(price=520.0, usual=800.0), "BCN": LiveQuote(price=530.0, usual=800.0)}, calls),
+                 require_live=True)
+    assert calls == ["MAD"] and len(post.sent) == 1
+    assert r.held_unverified == 0 and r.unverifiable is None                    # no alarm, no notice
+
+
+def test_without_a_key_candidates_are_held_and_flagged(cfg, store):
+    post = Poster()
+    r = run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=post, verify=None, require_live=True)
+    assert post.sent == [] and r.held_unverified == 1 and r.unverifiable == "no key"
+
+
+def test_a_candidate_is_never_posted_unchecked_except_in_a_preview(cfg, store):
+    post = Poster()
+    run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=post, verify=None, require_live=False)
+    assert post.sent == []
+    run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=post, verify=None, preview_candidates=True)
+    (c,) = post.sent
+    assert c.candidate and c.deal.destination == "BCN" and c.cheapness is not None and c.cheapness < 0.85
+
+
+def test_google_rating_a_price_low_is_enough(cfg, store):
+    post = Poster()
+    run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=post, require_live=True,
+             verify=google({"BCN": LiveQuote(price=470.0, usual=480.0, level="low", typical_low=520.0, typical_high=700.0)}))
+    assert post.sent[0].reasons == ["Google rates this price low for the trip (typical $520-$700)"]
+
+
+def test_a_check_without_price_insights_cannot_prove_a_deal_and_is_dropped(cfg, store):
+    post = Poster()
+    r = run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=post, verify=google({"BCN": 450.0}), require_live=True)
+    assert post.sent == [] and r.dropped_after_verify == 1
+    assert store.route_baseline("MSP-BCN") == (None, 1.0)                        # still learns the ratio
+
+
+def test_the_remembered_check_keeps_googles_insights_for_a_retry(cfg, store):
+    calls, verify = [], google({"BCN": LiveQuote(price=480.0, usual=700.0)}, [])
+    verify = google({"BCN": LiveQuote(price=480.0, usual=700.0)}, calls)
+    run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW, post=Poster(fail_on={"BCN"}), verify=verify, require_live=True)
+    post = Poster()
+    run_scan(euro_fares(CHEAP_BCN), tcfg(cfg), store, NOW + timedelta(hours=3), post=post, verify=verify, require_live=True)
+    assert calls == ["BCN"]                                                     # the retry reused the memory
+    assert post.sent[0].reasons == ["31% below the usual $700 (Google's recent average for this trip)"]
+
+
+def test_a_posted_fare_is_not_re_alerted_when_google_was_pricier_than_the_cache(cfg, store):
+    """Regression: the alert log now holds the cached price, which is what repeats are compared with."""
+    post, calls = Poster(), []
+    verify = scripted([549.0], calls)                                           # cached 480, live 549: within 15% and under the $550 bar
+    run_scan([lis(480.0)], cfg, store, NOW, post=post, verify=verify, require_live=True)
+    run_scan([lis(480.0)], cfg, store, NOW + timedelta(hours=3), post=post, verify=verify, require_live=True)
+    run_scan([lis(480.0)], cfg, store, NOW + timedelta(hours=30), post=post, verify=verify, require_live=True)
+    assert len(post.sent) == 1 and post.sent[0].live_price_usd == 549.0
+
+
+def test_every_real_check_updates_what_is_known_about_the_route(cfg, store):
+    verify = google({"LIS": LiveQuote(price=500.0, usual=520.0)})
+    run_scan([lis(400.0)], cfg, store, NOW, post=Poster(), verify=verify, require_live=True)       # dropped: 25% over the cache
+    assert store.route_baseline("MSP-LIS") == (520.0, 1.25)
+    verify2 = google({"LIS": LiveQuote(price=400.0, usual=540.0)})
+    run_scan([lis(400.0)], cfg, store, NOW + timedelta(days=2), post=Poster(), verify=verify2, require_live=True)
+    assert store.route_baseline("MSP-LIS") == (540.0, 1.125)                    # newest usual price, smoothed ratio
+
+
+# --- Google's booking horizon, and judging against Google's usual price (not the cache) ----------------------
+
+def far(days, price, dest="BCN"):
+    start = (NOW + timedelta(days=days)).date()
+    return make_deal(destination=dest, price_usd=price, depart_date=start, return_date=start + timedelta(days=7))
+
+
+def euro_with(bcn):
+    return [make_deal(destination=d, price_usd=900.0) for d in EURO[:5]] + [bcn]
+
+
+def test_fares_beyond_googles_booking_horizon_are_never_checked(cfg, store):
+    calls = []
+    verify = google({"BCN": LiveQuote(price=480.0, usual=700.0)}, calls)
+    run_scan(euro_with(far(327, 450.0)), tcfg(cfg), store, NOW, post=Poster(), verify=verify, require_live=True)
+    assert calls == []                                                        # 327 days out: Google would return nothing
+    run_scan(euro_with(far(320, 450.0)), tcfg(cfg), store, NOW, post=Poster(), verify=verify, require_live=True)
+    assert calls == ["BCN"]                                                   # 320 days is still inside the horizon
+
+
+def test_the_horizon_only_applies_when_a_live_check_is_required(cfg, store):
+    post = Poster()                                                           # baseline: fixed bars, no required check
+    run_scan([far(400, 400.0, dest="LIS")], cfg, store, NOW, post=post)
+    assert len(post.sent) == 1
+
+
+def test_a_fake_cheap_cache_does_not_hide_a_real_deal_under_the_typical_rule(cfg, store):
+    """Marseille: cached $450 was a mirage, but Google's $640 is still 20% under its usual $800."""
+    post, calls = Poster(), []
+    run_scan(euro_with(far(60, 450.0)), tcfg(cfg), store, NOW, post=post, require_live=True,
+             verify=google({"BCN": LiveQuote(price=640.0, usual=800.0, level="typical")}, calls))
+    assert [s.live_price_usd for s in post.sent] == [640.0]
+    assert post.sent[0].reasons == ["20% below the usual $800 (Google's recent average for this trip)"]
+    assert abs(store.route_baseline("MSP-BCN")[1] - 640 / 450) < 1e-9          # and the mirage is still learned
+
+
+def test_the_cache_sanity_gate_still_applies_to_fixed_prices(cfg, store):
+    post = Poster()
+    run_scan([lis(400.0)], cfg, store, NOW, post=post, verify=google({"LIS": LiveQuote(price=540.0)}), require_live=True)
+    assert post.sent == []                                                    # under the $550 bar but 35% above the cache

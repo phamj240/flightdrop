@@ -52,6 +52,15 @@ class DestinationFilter:
 
 
 @dataclass(frozen=True)
+class TypicalRule:
+    """Deal = live Google price meaningfully below the route's usual (average) price."""
+
+    enabled: bool = False
+    below_usual_pct: float = 15.0
+    accept_google_low: bool = True
+
+
+@dataclass(frozen=True)
 class AlertHours:
     """Daily window (local time in ``Config.timezone``) when alerts may be posted."""
 
@@ -112,6 +121,7 @@ class Config:
     # ISO-2 destination country -> {cabin: round-trip USD}. Overrides the region's price.
     thresholds_by_country: dict[str, dict[str, float]] = field(default_factory=dict)
     alert_hours: AlertHours | None = None            # None = alert at any time
+    typical: TypicalRule = field(default_factory=TypicalRule)
 
 
 def _require(d: dict[str, Any], key: str) -> Any:
@@ -125,6 +135,43 @@ def _codes(values: Any, length: int, what: str) -> tuple[str, ...]:
     bad = [v for v in out if len(v) != length or not v.isalpha()]
     if bad:
         raise ConfigError(f"{what} must be {length}-letter codes; got {bad}")
+    return out
+
+
+def _parse_typical(raw: Any) -> TypicalRule:
+    if raw is None:
+        return TypicalRule()
+    if not isinstance(raw, dict):
+        raise ConfigError("typical must be a mapping like {enabled: true, below_usual_pct: 15}")
+    try:
+        pct = float(raw.get("below_usual_pct", 15))
+    except (TypeError, ValueError):
+        raise ConfigError("typical.below_usual_pct must be a number") from None
+    if not 0 < pct < 90:
+        raise ConfigError("typical.below_usual_pct must be between 0 and 90")
+    return TypicalRule(bool(raw.get("enabled", False)), pct, bool(raw.get("accept_google_low", True)))
+
+
+def _parse_thresholds(raw: Any, cabins: tuple[Cabin, ...]) -> dict[str, dict[str, float]]:
+    """Optional regional price bars: region -> {cabin: round-trip USD}. Missing regions are fine."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError("thresholds_usd must be a mapping of region -> prices")
+    out: dict[str, dict[str, float]] = {}
+    for region, prices in raw.items():
+        if region not in REGIONS:
+            raise ConfigError(f"thresholds_usd has unknown region {region!r}; valid: {list(REGIONS)}")
+        if not isinstance(prices, dict):
+            raise ConfigError(f"thresholds_usd.{region} must map cabins to prices")
+        out[region] = {}
+        for cabin, value in prices.items():
+            if cabin not in CABINS:
+                raise ConfigError(f"thresholds_usd.{region}: unknown cabin {cabin!r}")
+            try:
+                out[region][cabin] = float(value)
+            except (TypeError, ValueError):
+                raise ConfigError(f"thresholds_usd.{region}.{cabin} must be a number") from None
     return out
 
 
@@ -270,13 +317,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
     if not cabins or bad:
         raise ConfigError(f"cabins must be a non-empty subset of {CABINS}; got {cabins}")
 
-    thresholds = _require(raw, "thresholds_usd")
-    for region in REGIONS:
-        for cabin in cabins:
-            try:
-                float(thresholds[region][cabin])
-            except (KeyError, TypeError, ValueError):
-                raise ConfigError(f"thresholds_usd.{region}.{cabin} must be a number") from None
+    thresholds = _parse_thresholds(raw.get("thresholds_usd"), cabins)  # type: ignore[arg-type]
 
     rel = _require(raw, "relative")
     ver = _require(raw, "verify")
@@ -300,7 +341,7 @@ def parse_config(raw: dict[str, Any]) -> Config:
             max_live_over_cached=float(ver["max_live_over_cached"]),
             require_live=bool(ver.get("require_live", False)),
         ),
-        thresholds_usd={r: {c: float(v) for c, v in d.items()} for r, d in thresholds.items()},
+        thresholds_usd=thresholds,
         rss=RssConfig(
             enabled=bool(rss.get("enabled", False)),
             keywords=tuple(str(k) for k in rss.get("keywords", [])),
@@ -313,7 +354,10 @@ def parse_config(raw: dict[str, Any]) -> Config:
         airlines=_parse_airlines(raw.get("airlines") or {}),
         thresholds_by_country=_parse_country_thresholds(raw.get("thresholds_by_country")),
         alert_hours=_parse_alert_hours(raw.get("alert_hours")),
+        typical=_parse_typical(raw.get("typical")),
     )
+    if cfg.typical.enabled and not cfg.verify.enabled:
+        raise ConfigError("typical.enabled needs verify.enabled: the rule uses Google's live price history")
     try:
         ZoneInfo(cfg.timezone)
     except (ZoneInfoNotFoundError, ValueError):

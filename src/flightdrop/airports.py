@@ -172,6 +172,17 @@ def country_name(code: str) -> str:
     return _COUNTRY_NAMES.get(code.upper(), code.upper())
 
 
+_CITY_DISPLAY = {
+    "FNA": "Freetown", "HNL": "Honolulu", "MRS": "Marseille", "SHA": "Shanghai", "VCE": "Venice",
+}
+
+
 def city_name(iata: str) -> str:
-    ap = lookup(iata)
-    return ap.city if ap and ap.city else iata
+    """A readable city for display. The data's own city field can be awkward ('Marignane, Bouches-du-Rhône')."""
+    code = iata.upper()
+    if code in _CITY_DISPLAY:
+        return _CITY_DISPLAY[code]
+    ap = lookup(code)
+    if not (ap and ap.city):
+        return iata
+    return re.sub(r"\s*\(.*?\)", "", ap.city.split(",")[0]).strip() or iata
